@@ -43,6 +43,13 @@ Design revised with the user and rewritten in `docs/design/jetson-lab-desk.md`
   DPAPI/Keychain and bound to the OS account. No plaintext fallback — if
   `isEncryptionAvailable()` is false (or the Linux backend is `basic_text`), the
   app asks every time instead. No database; a JSON file is enough.
+- sudo password: the app has no terminal, so it must be collected in-app — but not
+  by default. For the usual same-account setup the SSH password IS the sudo
+  password, so the stored one is tried first via `sudo -k -S -p '' -v`; only when
+  that fails is a separate `sudoPassword` collected and stored in the same file
+  under the same encryption. One failed attempt stops (repeats hit sudo's warning
+  and `auth.log`), and if sudo is unusable at all (`requiretty`, not in sudoers)
+  the app surfaces the one-line manual command instead of hiding the failure.
 - Provision by SSH push: `git archive` tar streamed over `ssh2`; idempotent
   9-step bootstrap (check → act → verify) with a `VERSION` marker under
   `~/.uvc-lab/`. Everything installs inside the user's home.
@@ -62,10 +69,17 @@ Design revised with the user and rewritten in `docs/design/jetson-lab-desk.md`
   and is reported rather than fixed.
 - `v4l-utils` is NOT installed: `v4l2-ctl` only appears in a hint string in
   `uvc_devices.py`, never executed.
-- Coexistence with other users of the Jetson: 8100 may be taken on the Jetson's
-  loopback (port is a unit argument, stored as `serverPort`), and `/dev/video*`
-  may be held by an outside process (open failure must be reported as "busy",
-  not a generic error).
+- Coexistence with other users of the Jetson: the server port may be taken on the
+  Jetson's loopback (port is a unit argument, stored as `serverPort`), and
+  `/dev/video*` may be held by an outside process (open failure must be reported
+  as "busy", not a generic error).
+- Port numbers are fixed: the Jetson binds `127.0.0.1:18100`, walking up to 18109
+  if `ss -ltn` shows it taken; the laptop-side tunnel entrance starts at 18101,
+  one per device, falling back to an OS-assigned port. 10000-range is deliberate —
+  Linux's default `ip_local_port_range` is 32768-60999, so a fixed port at 49152+
+  (the IANA dynamic range) collides intermittently with outbound ephemeral ports.
+  The live tunnel URL is shown on the device card so the browser fallback path
+  stays findable when the port is not the predicted one.
 - `serve_uvc_lab.py` gains `/api/health` (version + hostname) so discovery can
   tell provisioned boxes and version drift.
 - Known constraint: `uv sync` assumes the Jetson can reach PyPI; the user
@@ -144,3 +158,30 @@ route).
   version constraint comes from `pyproject.toml` (`requires-python = ">=3.10"`),
   which is what makes JetPack 5's python3.8 a real bootstrap step rather than a
   hypothetical one.
+
+## docs: sudo 자격증명 처리 + 포트 번호 18100 확정 (#2)
+
+- What: added a `### sudo 비밀번호` subsection to the auth section and a
+  `### 포트 번호 — Jetson 18100` subsection to the coexistence section of
+  `docs/design/jetson-lab-desk.md`, and replaced every remaining `8100` in the
+  diagram, data model, and tunnel section with `18100`. The coexistence bullet
+  that used to describe port conflict inline now points at the new subsection.
+- Why: both were the user's calls. On sudo, the app has no terminal so the
+  password must be collected in-app — but the design would have been wrong to
+  add a second stored secret by default, because in the usual same-account setup
+  the SSH password already IS the sudo password and is already stored. So the
+  stored one is tried first and a separate `sudoPassword` exists only for the
+  different-account case. On ports, "somewhere in the 10000s" is correct for a
+  reason worth writing down: Linux's default `ip_local_port_range` is
+  32768-60999, so a fixed port in the IANA dynamic range (49152+) collides
+  intermittently with outbound ephemeral ports — a failure that reproduces
+  badly. 18100 sits below that range and keeps the old 8100 as a mnemonic.
+- How verified: documentation only, no code paths touched. `grep -n 8100` over
+  the design doc confirms the four stale references were the diagram (line 38),
+  the `serverPort` comment (136), the tunnel destination (285), and the
+  exposure rationale (293), and that the remaining matches are the new
+  subsection's deliberate references to the old number. The sudo invocation is
+  written as `sudo -k -S -p '' -v` so that `-k` makes the check independent of a
+  cached timestamp and `-p ''` removes the prompt string from stderr; the design
+  records the one-attempt limit and the manual `loginctl enable-linger` escape
+  hatch rather than assuming sudo always works.
