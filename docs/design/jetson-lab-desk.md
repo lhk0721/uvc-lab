@@ -2,6 +2,7 @@
 
 - Issue: #2 (umbrella #1)
 - Status: 설계 확정, 구현 전
+- 후속 문서: [`lab-desk-spec.md`](lab-desk-spec.md) — 장치 식별·rig·화면·테스트 명세
 
 ## 배경과 목표
 
@@ -103,8 +104,9 @@ uvc-lab/
 열어두기 위해서다. renderer 빌드 결과물은 정적 파일 묶음이므로, 나중에 Jetson의
 Python 서버가 같은 빌드를 서빙하게 만들 수도 있다.
 
-기존 코드 변경은 하나뿐이다: `serve_uvc_lab.py`에 `/api/health` 추가
-(버전 + hostname 응답).
+기존 코드 변경은 셋이다: `serve_uvc_lab.py`에 `/api/health` 추가(버전 + hostname
+응답), `/api/devices`의 열거 방식 교체, `/api/rig` 신설. 뒤의 둘은 실측으로 드러난
+장치 식별 문제 때문이고 [`lab-desk-spec.md`](lab-desk-spec.md)에서 다룬다.
 
 ## 여러 대 전제
 
@@ -340,6 +342,10 @@ Windows에 rsync가 없어도 동작한다.
 ### 대상 OS — Ubuntu on aarch64
 
 Jetson은 JetPack(L4T) 기반이고 그 실체는 Ubuntu다. 여기서 나오는 전제가 넷 있다.
+
+실측 대상 장비는 **JetPack 6 / Ubuntu 22.04.5 / L4T R36.5.0 / python3 3.10.12**다
+(2026-08-18 확인). 아래 python 항목의 낮은 쪽 경로는 이 장비에서는 타지 않는다.
+전체 실측값은 [`lab-desk-spec.md`](lab-desk-spec.md) §1에 있다.
 
 - **아키텍처는 `aarch64`다.** x86_64가 아니다. uv 설치 스크립트는 아키텍처를
   자동 판별하고, `opencv-python`·`numpy`도 `manylinux2014_aarch64` wheel이 있어

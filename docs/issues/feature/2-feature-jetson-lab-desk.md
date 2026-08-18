@@ -85,10 +85,51 @@ Design revised with the user and rewritten in `docs/design/jetson-lab-desk.md`
 - Known constraint: `uv sync` assumes the Jetson can reach PyPI; the user
   confirmed the Jetson is online, so offline wheel push stays out of scope.
 
-Next step: implement in the commit order at the end of the design doc
-(health endpoint → bootstrap/unit → `desktop/` skeleton → discovery →
-provisioning → tunnel → device UI → lab UI → e2e on real hardware, once per
-route).
+Behaviour spec written in `docs/design/lab-desk-spec.md` (Korean, human-facing),
+grounded in a live inspection of the real Jetson on 2026-08-18 over the
+link-local direct-LAN route (`169.254.203.230`; the Tailscale peer was offline).
+What that inspection settled:
+
+- The cameras have NO unique per-unit id. All three report VID:PID `1bcf:2d50`,
+  `serial` `01.00.000` (a firmware version string, not a serial) and `bcdDevice`
+  `0234`. A MAC-equivalent identity does not exist, so per-camera aliases cannot
+  be derived from the device.
+- `/dev/v4l/by-id/` is actively wrong here: identical names collide, udev keeps 4
+  symlinks for 6 nodes, and the surviving pair mixes nodes from two different
+  cameras. It is banned in the spec — it is worse than having nothing because the
+  name looks authoritative.
+- The only stable key is the USB port path (`ID_PATH`), so **the port is the
+  identity**. `camId` is the port suffix (`usb-0:1.1`) with no hash wrapper, since
+  a hash would only make the value unreadable on stickers and in error messages.
+  Physical marking (`P1`/`P2`/`P4`) covers the one case software cannot: two
+  identical cameras swapped between ports is undetectable, forever.
+- Node count is twice the camera count (even = capture, odd = metadata, which
+  fails to open). `list_devices(max_index=5)` finding 3 cameras is luck; a 4th
+  camera would be missed. Enumeration moves to by-path.
+- **The three cameras are not the same product.** V4L2 control ranges show ports
+  1-2 with Backlight Compensation `0..3` + Hue `1..200` (the trigger-mode switch
+  documented in rack-tracker's FSIN wiring doc), while port 4 has `16..160` /
+  `-128..128` — an ordinary webcam control map. Port 4 has no trigger firmware, so
+  3-camera hardware-trigger sync is impossible with this set. This is exactly the
+  class of error the rig check exists to catch, and it would have looked like a
+  wiring fault at test time.
+- Target box is JetPack 6 (Ubuntu 22.04.5, L4T R36.5.0, python3 3.10.12, system
+  cv2 4.8.0, no `uv`, no `v4l2-ctl`), so the python3.8 branch of the bootstrap
+  does not apply here and trigger-mode switching must go through OpenCV
+  (`CAP_PROP_BACKLIGHT`), not `v4l2-ctl`.
+
+Design decisions that follow: `rig.json` lives on the Jetson (`~/.uvc-lab/`)
+because the wiring is a property of the box, not of any laptop; registration is
+snapshot-plus-label rather than a form; a 7-state match result gates entry to the
+lab screen with an explicit "proceed anyway" that records `rigStatus` alongside
+results; the wiring diagram renders observation as solid lines and declarations
+(FSIN) as dashed; and test profiles carry a `requires` block so an impossible
+combination is refused before it runs rather than producing numbers.
+
+Next step: implement in the revised 13-step order at the end of the spec. Steps 2
+and 3 (by-path enumeration + control-profile detection, then `/api/rig`) come
+before any Electron work because they need no app and catch the class of problem
+found above.
 
 ## feature: Jetson Lab Desk 설계 문서 (#2)
 
@@ -185,3 +226,39 @@ route).
   cached timestamp and `-p ''` removes the prompt string from stderr; the design
   records the one-attempt limit and the manual `loginctl enable-linger` escape
   hatch rather than assuming sudo always works.
+
+## docs: Lab Desk 동작 명세 — 포트 기반 장치 식별과 rig 대조 (#2)
+
+- What: added `docs/design/lab-desk-spec.md`, the behaviour spec covering device
+  identity, the `rig` model, the match rules, the wiring diagram, the lab screen's
+  actions, test profiles, and the IPC surface. Updated the Current State block
+  above. Also corrected `docs/design/jetson-lab-desk.md` in two places: it claimed
+  `/api/health` was the only change to existing code (now three — `/api/devices`
+  enumeration is replaced and `/api/rig` is new), and the OS section now records
+  which JetPack the measured box actually runs so the reader knows which branch of
+  the python-version paragraph applies.
+- Why: the user asked whether the hardware setup has to be declared to the app
+  before it can call a mis-detection an error. It does — two cameras showing up is
+  a fact, not a fault, until something says three were expected. The user then
+  asked whether a MAC-like id could anchor per-camera aliases. It cannot, and that
+  had to be established against the real hardware rather than assumed: all three
+  cameras report the same VID:PID, the same `serial` (`01.00.000`, a firmware
+  version string), and the same `bcdDevice`, which is also why `/dev/v4l/by-id/`
+  collides and hands out a symlink pair that mixes two different cameras. The USB
+  port path is the only stable key, so the spec makes the port the identity and
+  assigns physical marking to the one failure mode software cannot see (two
+  identical cameras swapped between ports).
+- How verified: inspected the live Jetson over SSH on the link-local direct-LAN
+  route (`169.254.203.230` — the Tailscale peer was offline, which incidentally
+  exercised one of the four discovery routes). Read `ID_SERIAL`/`ID_PATH` via
+  `udevadm info` and the `serial`/`manufacturer`/`bcdDevice` sysfs attributes for
+  all three USB devices; confirmed the by-id collision by counting 4 symlinks
+  against 6 nodes and following both to their targets; confirmed only the even
+  video nodes open by running a `cv2.VideoCapture` probe over all six; and queried
+  `VIDIOC_QUERYCTRL` directly for Backlight Compensation, Hue, and the exposure
+  controls on each camera. That last check produced the finding that drives the
+  spec's `requires` gate: ports 1-2 expose Backlight `0..3` (the trigger-mode
+  switch) while port 4 exposes `16..160`, so port 4 has no trigger firmware and a
+  3-camera hardware-trigger profile must be refused before it runs. No code was
+  changed on the Jetson and no camera setting was left modified — the probes read
+  control ranges and restored nothing because nothing was written.
