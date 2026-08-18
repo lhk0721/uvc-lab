@@ -1,0 +1,21 @@
+{
+  "kit_version": "0.1.6",
+  "files": [
+    ".githooks/checks/commit-msg.mjs",
+    ".githooks/checks/config.mjs",
+    ".githooks/checks/doc-pairs.mjs",
+    ".githooks/checks/doctor.mjs",
+    ".githooks/checks/lib.mjs",
+    ".githooks/checks/management-doc.mjs",
+    ".githooks/checks/protected-push.mjs",
+    ".githooks/commit-msg",
+    ".githooks/pre-commit",
+    ".githooks/pre-push",
+    "AGENTS.md#kernel-block",
+    "CLAUDE.md",
+    "docs/agent-workflow/documentation-rules.md",
+    "docs/agent-workflow/git-rules.md",
+    "docs/agent-workflow/onboarding.md",
+    "docs/agent-workflow/templates.md"
+  ]
+}

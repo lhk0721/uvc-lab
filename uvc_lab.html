@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UVC 카메라 랩</title>
+<style>
+  :root {
+    --bg: #ffffff; --panel: #f6f7f8; --line: #d8dbdf; --ink: #16181c;
+    --muted: #656b75; --accent: #1c4fd8;
+    --ok: #10693a; --warn: #8a5a00; --fail: #b3261e;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --panel: #1c1f25; --line: #2e333c; --ink: #e8eaed;
+      --muted: #969ca7; --accent: #7aa2ff;
+      --ok: #5ed49a; --warn: #e8b04b; --fail: #ff8a80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 650; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  main {
+    display: grid; grid-template-columns: minmax(380px, 5fr) minmax(420px, 7fr);
+    gap: 20px; padding: 20px; align-items: start;
+  }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  section > h2 {
+    font-size: 13px; margin: 0; padding: 10px 14px; font-weight: 650;
+    border-bottom: 1px solid var(--line); color: var(--muted);
+    text-transform: uppercase; letter-spacing: .04em;
+  }
+  .body { padding: 14px; }
+  .stack { display: flex; flex-direction: column; gap: 12px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+  select, input[type=number], input[type=text] {
+    background: var(--bg); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 5px; padding: 6px 8px; font: inherit; min-width: 0;
+  }
+  input[type=number] { font-family: var(--mono); }
+  button {
+    background: var(--accent); color: #fff; border: 0; border-radius: 5px;
+    padding: 7px 13px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  #preview-box {
+    position: relative; width: 100%; aspect-ratio: 16/10;
+    background: #000; border-radius: 6px; overflow: hidden;
+  }
+  #preview { width: 100%; height: 100%; object-fit: contain; display: none; }
+  #preview-box.live #preview { display: block; }
+  #preview-box.live #preview-empty { display: none; }
+  #preview-empty {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 8px;
+    color: #78808d; text-align: center; padding: 0 20px;
+  }
+  #preview-empty .t { font-weight: 600; font-size: 14px; }
+  #preview-empty .h { font-size: 12.5px; color: #5a616c; }
+  .stats { display: flex; gap: 18px; flex-wrap: wrap; font-family: var(--mono); font-size: 13px; }
+  .stats b { font-weight: 600; }
+  .muted { color: var(--muted); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .presets { display: flex; flex-direction: column; gap: 6px; }
+  .preset {
+    text-align: left; background: var(--bg); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 6px; padding: 9px 11px;
+    cursor: pointer; font: inherit;
+  }
+  .preset[aria-pressed=true] { border-color: var(--accent); }
+  .preset .t { font-weight: 620; display: block; }
+  .preset .q { color: var(--muted); font-size: 12.5px; display: block; margin-top: 2px; }
+  .preset .d { color: var(--muted); font-size: 12px; font-family: var(--mono); }
+  pre.log {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+    padding: 10px; margin: 0; max-height: 210px; overflow: auto;
+    font-family: var(--mono); font-size: 12px; white-space: pre-wrap;
+  }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 5px 9px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  td { font-family: var(--mono); }
+  td:first-child, th:first-child { font-family: inherit; }
+  .tablewrap { overflow-x: auto; }
+  .headline { font-size: 15px; font-weight: 650; margin: 0 0 4px; }
+  .status-ok { color: var(--ok); } .status-warn { color: var(--warn); } .status-fail { color: var(--fail); }
+  ul.notes { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
+  ul.notes li { margin-bottom: 5px; }
+  details { margin-top: 10px; } summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  .err { color: var(--fail); font-family: var(--mono); font-size: 12.5px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>UVC 카메라 랩</h1>
+  <span class="sub">실물 카메라 확인과 성능 측정</span>
+</header>
+
+<main>
+  <div class="stack">
+    <section>
+      <h2>라이브 미리보기</h2>
+      <div class="body stack">
+        <div id="preview-box">
+          <img id="preview" alt="">
+          <div id="preview-empty">
+            <svg width="42" height="42" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round">
+              <rect x="2.5" y="6.5" width="13" height="11" rx="2"/>
+              <path d="M15.5 10.8 21 7.7v8.6l-5.5-3.1"/>
+            </svg>
+            <div class="t" id="preview-empty-title">미리보기 꺼짐</div>
+            <div class="h" id="preview-empty-hint">카메라·해상도·포맷을 고르고 ‘미리보기 시작’을 누르세요</div>
+          </div>
+        </div>
+        <div class="stats">
+          <span>fps <b id="s-fps">–</b></span>
+          <span>신호 <b id="s-signal">–</b></span>
+          <span class="muted" id="s-detail"></span>
+        </div>
+        <div class="grid2">
+          <div>
+            <label for="cam">카메라</label>
+            <select id="cam" style="width:100%"></select>
+          </div>
+          <div>
+            <label for="res">해상도</label>
+            <select id="res" style="width:100%"></select>
+          </div>
+          <div>
+            <label for="fcc">포맷</label>
+            <select id="fcc" style="width:100%">
+              <option>MJPG</option><option>YUY2</option>
+            </select>
+          </div>
+          <div>
+            <label for="q">JPEG 품질</label>
+            <input type="number" id="q" value="80" min="30" max="95" style="width:100%">
+          </div>
+        </div>
+        <div class="row">
+          <button id="btn-start">미리보기 시작</button>
+          <button id="btn-stop" class="ghost" disabled>정지</button>
+          <button id="btn-snap" class="ghost">스냅샷 저장</button>
+          <button id="btn-refresh" class="ghost">장치 새로고침</button>
+        </div>
+        <div id="snap-out" class="muted" style="font-size:12.5px"></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>테스트 프리셋</h2>
+      <div class="body"><div class="presets" id="presets"></div></div>
+    </section>
+  </div>
+
+  <div class="stack">
+    <section>
+      <h2>설정 및 실행</h2>
+      <div class="body stack">
+        <div id="preset-info" class="muted">왼쪽에서 프리셋을 고르세요.</div>
+        <div id="params" class="grid2"></div>
+        <div class="row">
+          <button id="btn-run" disabled>실행</button>
+          <span id="run-state" class="muted"></span>
+        </div>
+        <pre class="log" id="log">대기 중.</pre>
+      </div>
+    </section>
+
+    <section>
+      <h2>결과</h2>
+      <div class="body" id="result"><span class="muted">아직 실행한 테스트가 없습니다.</span></div>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let presets = [], selected = null, devices = [], pollTimer = null, statsTimer = null;
+
+const RESOLUTIONS = ["1920x1200", "1920x1080", "1600x1200", "1280x800", "1280x720", "640x480", "640x400", "640x360"];
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  if (!res.ok) throw new Error((await res.text()) || res.statusText);
+  return res.json();
+}
+
+// ---- devices ----------------------------------------------------------
+async function loadDevices() {
+  stopPreview();
+  $("cam").innerHTML = '<option>불러오는 중…</option>';
+  try {
+    devices = await api("/api/devices");
+    $("cam").innerHTML = devices.map(d =>
+      `<option value="${d.index}">index ${d.index} — ${d.signature || `${d.width}x${d.height}`}</option>`
+    ).join("") || '<option value="">장치 없음</option>';
+  } catch (e) {
+    $("cam").innerHTML = '<option value="">오류</option>';
+    $("s-detail").textContent = e.message;
+  }
+  if (selected) renderParams();
+}
+
+// ---- preview ----------------------------------------------------------
+function previewURL() {
+  const p = new URLSearchParams({
+    index: $("cam").value || "0", resolution: $("res").value,
+    fourcc: $("fcc").value, quality: $("q").value,
+  });
+  return `/stream.mjpg?${p}&t=${Date.now()}`;
+}
+const PLACEHOLDER_IDLE = ["미리보기 꺼짐", "카메라·해상도·포맷을 고르고 ‘미리보기 시작’을 누르세요"];
+function setPlaceholder(title, hint) {
+  $("preview-empty-title").textContent = title;
+  $("preview-empty-hint").textContent = hint;
+}
+function startPreview() {
+  if (!$("cam").value && $("cam").value !== "0") return;
+  $("preview").src = previewURL();
+  $("preview-box").classList.add("live");
+  $("btn-start").disabled = true; $("btn-stop").disabled = false;
+  statsTimer = setInterval(pollStats, 700);
+}
+function stopPreview() {
+  $("preview-box").classList.remove("live");
+  $("preview").removeAttribute("src");
+  $("btn-start").disabled = false; $("btn-stop").disabled = true;
+  clearInterval(statsTimer); statsTimer = null;
+  setPlaceholder(...PLACEHOLDER_IDLE);
+  $("s-fps").textContent = "–"; $("s-signal").textContent = "–"; $("s-detail").textContent = "";
+}
+// A dead stream (device unplugged, 409 while contended) leaves the <img>
+// broken; fall back to the placeholder instead. stopPreview() drops the
+// "live" class before touching src, so this cannot recurse.
+$("preview").onerror = () => {
+  if ($("preview-box").classList.contains("live")) stopPreview();
+};
+async function pollStats() {
+  try {
+    const s = await api("/api/stream/stats");
+    $("s-fps").textContent = s.active ? (s.fps ?? 0).toFixed(1) : "–";
+    const sig = s.signal;
+    if (sig) {
+      $("s-signal").textContent = sig.state;
+      $("s-signal").className = sig.state === "ok" ? "status-ok"
+        : (sig.state === "dark" ? "status-warn" : "status-fail");
+      $("s-detail").textContent = `평균 ${sig.mean}/255 · 최대 ${sig.max}`
+        + (sig.state === "dead" ? " — 전 픽셀 0, 영상 없음"
+          : sig.state === "dark" ? " — 렌즈캡·조명 확인" : "");
+    }
+    if (s.error) $("s-detail").textContent = s.error;
+  } catch (_) { /* transient during preemption */ }
+}
+
+// ---- presets ----------------------------------------------------------
+function renderPresetList() {
+  $("presets").innerHTML = "";
+  presets.forEach(p => {
+    const b = document.createElement("button");
+    b.className = "preset"; b.setAttribute("aria-pressed", String(selected?.id === p.id));
+    b.innerHTML = `<span class="t">${p.title}</span><span class="q">${p.question}</span>`
+      + `<span class="d">${p.duration_hint}</span>`;
+    b.onclick = () => { selected = p; renderPresetList(); renderParams(); };
+    $("presets").appendChild(b);
+  });
+}
+
+function renderParams() {
+  if (!selected) return;
+  $("preset-info").innerHTML = `<b>${selected.title}</b><br>${selected.detail}`;
+  $("params").innerHTML = "";
+  selected.params.forEach(spec => {
+    const wrap = document.createElement("div");
+    const id = `p-${spec.key}`;
+    let field;
+    if (spec.type === "bool") {
+      field = `<input type="checkbox" id="${id}" ${spec.default ? "checked" : ""}>`;
+      wrap.innerHTML = `<label for="${id}">${spec.label}</label>${field}`;
+    } else if (spec.type === "select") {
+      field = `<select id="${id}" style="width:100%">` +
+        spec.options.map(o => `<option ${o === spec.default ? "selected" : ""}>${o}</option>`).join("") +
+        `</select>`;
+      wrap.innerHTML = `<label for="${id}">${spec.label}</label>${field}`;
+    } else if (spec.type === "multiselect") {
+      wrap.innerHTML = `<label>${spec.label}</label>` + spec.options.map(o =>
+        `<label style="display:inline-flex;gap:5px;align-items:center;margin-right:12px;color:var(--ink)">
+           <input type="checkbox" data-multi="${spec.key}" value="${o}" ${spec.default.includes(o) ? "checked" : ""}>${o}</label>`
+      ).join("");
+    } else if (spec.type === "indices") {
+      wrap.style.gridColumn = "1 / -1";
+      wrap.innerHTML = `<label>${spec.label}</label>` + (devices.length
+        ? devices.map(d => `<label style="display:inline-flex;gap:5px;align-items:center;margin-right:12px;color:var(--ink)">
+            <input type="checkbox" data-multi="${spec.key}" value="${d.index}">index ${d.index}</label>`).join("")
+        : '<span class="muted">장치를 먼저 새로고침하세요.</span>');
+    } else if (spec.type === "numbers") {
+      wrap.style.gridColumn = "1 / -1";
+      wrap.innerHTML = `<label for="${id}">${spec.label}</label>
+        <input type="text" id="${id}" style="width:100%" value="${spec.default.join(', ')}">`;
+    } else {
+      const step = spec.type === "float" ? "0.5" : "1";
+      wrap.innerHTML = `<label for="${id}">${spec.label}</label>
+        <input type="number" id="${id}" style="width:100%" value="${spec.default}" step="${step}"
+        ${spec.min !== undefined ? `min="${spec.min}"` : ""} ${spec.max !== undefined ? `max="${spec.max}"` : ""}>`;
+    }
+    $("params").appendChild(wrap);
+  });
+  $("btn-run").disabled = false;
+}
+
+function collectParams() {
+  const out = {};
+  selected.params.forEach(spec => {
+    const el = document.getElementById(`p-${spec.key}`);
+    if (spec.type === "bool") out[spec.key] = el.checked;
+    else if (spec.type === "multiselect" || spec.type === "indices") {
+      const picked = [...document.querySelectorAll(`[data-multi="${spec.key}"]:checked`)]
+        .map(c => spec.type === "indices" ? Number(c.value) : c.value);
+      out[spec.key] = picked;
+    } else if (spec.type === "numbers") {
+      out[spec.key] = el.value.split(",").map(s => Number(s.trim())).filter(n => !Number.isNaN(n));
+    } else if (spec.type === "int") out[spec.key] = parseInt(el.value, 10);
+    else if (spec.type === "float") out[spec.key] = parseFloat(el.value);
+    else out[spec.key] = el.value;
+  });
+  return out;
+}
+
+// ---- runs -------------------------------------------------------------
+async function startRun() {
+  const wasPreviewing = !$("btn-stop").disabled;
+  stopPreview();  // the run preempts the device anyway; releasing first avoids a stalled image
+  setPlaceholder("벤치마크 실행 중", wasPreviewing
+    ? "벤치마크가 카메라를 점유합니다 — 끝나면 미리보기가 자동으로 재개됩니다"
+    : "벤치마크가 카메라를 점유하고 있습니다");
+  $("btn-run").disabled = true;
+  $("run-state").textContent = "실행 중…";
+  $("log").textContent = "";
+  $("result").innerHTML = '<span class="muted">측정 중…</span>';
+  try {
+    const { run_id } = await api("/api/runs", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ preset: selected.id, params: collectParams() }),
+    });
+    pollRun(run_id, wasPreviewing);
+  } catch (e) {
+    $("run-state").textContent = "";
+    $("result").innerHTML = `<div class="err">${e.message}</div>`;
+    $("btn-run").disabled = false;
+    setPlaceholder(...PLACEHOLDER_IDLE);
+  }
+}
+
+function pollRun(runId, resumePreview) {
+  clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    let run;
+    try { run = await api(`/api/runs/${runId}`); } catch { return; }
+    $("log").textContent = run.log.join("\n") || "…";
+    $("log").scrollTop = $("log").scrollHeight;
+    if (run.status === "running") return;
+
+    clearInterval(pollTimer);
+    $("btn-run").disabled = false;
+    $("run-state").textContent = "";
+    if (run.status === "error") {
+      $("result").innerHTML = `<div class="err">${run.error}</div>`
+        + `<details><summary>traceback</summary><pre class="log">${run.traceback || ""}</pre></details>`;
+    } else {
+      renderResult(run.result);
+    }
+    if (resumePreview) startPreview();
+    else setPlaceholder(...PLACEHOLDER_IDLE);
+  }, 500);
+}
+
+function renderResult(r) {
+  const cls = { ok: "status-ok", warn: "status-warn", fail: "status-fail" }[r.status] || "";
+  let html = `<p class="headline ${cls}">${r.headline}</p>`;
+  (r.tables || []).forEach(t => {
+    if (!t.rows || !t.rows.length) return;
+    html += `<div class="tablewrap"><table><caption style="text-align:left;color:var(--muted);
+      font-size:12px;padding:8px 0 4px">${t.title}</caption><tr>`
+      + t.columns.map(c => `<th>${c}</th>`).join("") + `</tr>`
+      + t.rows.map(row => `<tr>` + row.map(c => `<td>${c ?? "–"}</td>`).join("") + `</tr>`).join("")
+      + `</table></div>`;
+  });
+  if (r.notes?.length) html += `<ul class="notes">` + r.notes.map(n => `<li>${n}</li>`).join("") + `</ul>`;
+  html += `<details><summary>원본 데이터 (JSON)</summary>
+    <pre class="log">${JSON.stringify(r.raw, null, 2)}</pre></details>`;
+  $("result").innerHTML = html;
+}
+
+// ---- boot -------------------------------------------------------------
+$("res").innerHTML = RESOLUTIONS.map(r =>
+  `<option ${r === "1280x720" ? "selected" : ""}>${r}</option>`).join("");
+$("btn-start").onclick = startPreview;
+$("btn-stop").onclick = stopPreview;
+$("btn-refresh").onclick = loadDevices;
+$("btn-run").onclick = startRun;
+$("btn-snap").onclick = async () => {
+  const wasPreviewing = !$("btn-stop").disabled;
+  stopPreview();
+  setPlaceholder("스냅샷 촬영 중", "전체 해상도 프레임을 저장하고 있습니다");
+  $("snap-out").textContent = "저장 중…";
+  try {
+    const p = new URLSearchParams({ index: $("cam").value || "0",
+      resolution: $("res").value, fourcc: $("fcc").value });
+    const r = await api(`/api/snapshot?${p}`, { method: "POST" });
+    $("snap-out").textContent = `${r.path} — ${r.describe}`;
+  } catch (e) { $("snap-out").textContent = e.message; }
+  if (wasPreviewing) startPreview();
+  else setPlaceholder(...PLACEHOLDER_IDLE);
+};
+
+(async () => {
+  presets = await api("/api/presets");
+  renderPresetList();
+  await loadDevices();
+})();
+</script>
+</body>
+</html>
