@@ -54,7 +54,7 @@
 <!-- One line per active work item: name + management doc path + one-line summary.
      Details live in the doc's "Current State" block, never here.
      Remove the line in post-PR cleanup when the PR merges or the issue closes. -->
-- (none)
+- Jetson Lab Desk — docs/issues/feature/2-feature-jetson-lab-desk.md — design done (docs/design/jetson-lab-desk.md), implementation not started.
 
 ## Canon (repo slot)
 
