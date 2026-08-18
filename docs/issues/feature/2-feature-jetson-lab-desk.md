@@ -20,9 +20,29 @@ Design revised with the user and rewritten in `docs/design/jetson-lab-desk.md`
   Renderer runs with `nodeIntegration: false`, `contextIsolation: true`.
 - Multi-device from the start: all state is keyed by a Jetson id, even though
   the UI shows one device today.
-- Discovery order: 192.168.55.1 (USB device mode) → mDNS → subnet SSH scan.
-- SSH auth: **password**, stored via Electron `safeStorage`, never leaving the
-  main process, never placed on a remote command line (`sudo -S` on stdin).
+- Discovery covers the four wiring cases the user actually uses: same WiFi/LAN,
+  USB direct (`192.168.55.1`), LAN-port direct (link-local `169.254.x.x`), and
+  a different network over Tailscale. mDNS cannot cross a tailnet, so Tailscale
+  peers come from `tailscale status --json` when the CLI is present; the tailnet
+  range is never scanned. Manual add by IP is a required escape hatch (corporate
+  WiFi blocks multicast; guest networks isolate clients).
+- Discovery is two-phase: collect `(address, route)` candidates in parallel, then
+  identify over SSH/health and merge by the hostname the box reports. One Jetson
+  can be reachable by several routes at once, so `Jetson.routes` is a list and
+  `activeRoute` records the one in use. Preference: USB > LAN/mDNS > Tailscale.
+- HTTP reaches the Jetson **through an SSH port forward**, not a directly exposed
+  port. `serve_uvc_lab.py` keeps its default `127.0.0.1` bind; main forwards a
+  local port to the Jetson's loopback with `ssh2` `forwardOut`, and the renderer
+  always talks to `http://127.0.0.1:<local>`. This collapses all four routes into
+  one code path, opens no port on shared hardware, and keeps the renderer URL
+  stable across route changes.
+- SSH auth: **password**, never leaving the main process, never placed on a
+  remote command line (`sudo -S` on stdin). `safeStorage` is a cipher, not a
+  store: the encrypted blob is written to `app.getPath('userData')/
+  credentials.json` (`%APPDATA%\uvc-lab-desk\` on Windows), with the key held by
+  DPAPI/Keychain and bound to the OS account. No plaintext fallback — if
+  `isEncryptionAvailable()` is false (or the Linux backend is `basic_text`), the
+  app asks every time instead. No database; a JSON file is enough.
 - Provision by SSH push: `git archive` tar streamed over `ssh2`; idempotent
   9-step bootstrap (check → act → verify) with a `VERSION` marker under
   `~/.uvc-lab/`. Everything installs inside the user's home.
@@ -31,12 +51,21 @@ Design revised with the user and rewritten in `docs/design/jetson-lab-desk.md`
   implementation must handle: `XDG_RUNTIME_DIR` is absent in non-interactive
   SSH, and `loginctl enable-linger` is needed once per box (the only `sudo` on
   the normal path).
+- Target OS is Ubuntu on `aarch64` (JetPack/L4T). `apt` is never used, so the
+  only `sudo` on the normal path is `loginctl enable-linger`. Four consequences
+  are written into the design: aarch64 wheels exist for `opencv-python`/`numpy`
+  so nothing builds from source; JetPack 5 (Ubuntu 20.04) ships python3.8 while
+  `pyproject.toml` requires >=3.10, resolved by `uv python install` rather than
+  apt (hence uv is installed before python in the step order); the venv's cv2
+  shadows JetPack's CUDA-built OpenCV, which is fine for V4L2 UVC capture; and
+  avahi may be absent on server images, which silently removes the mDNS route
+  and is reported rather than fixed.
 - `v4l-utils` is NOT installed: `v4l2-ctl` only appears in a hint string in
-  `uvc_devices.py`, never executed. JetPack ships python3, so `apt` is expected
-  to be skipped entirely.
-- Coexistence with other users of the Jetson: port 8100 may be taken (port is a
-  unit argument), and `/dev/video*` may be held by an outside process (open
-  failure must be reported as "busy", not a generic error).
+  `uvc_devices.py`, never executed.
+- Coexistence with other users of the Jetson: 8100 may be taken on the Jetson's
+  loopback (port is a unit argument, stored as `serverPort`), and `/dev/video*`
+  may be held by an outside process (open failure must be reported as "busy",
+  not a generic error).
 - `serve_uvc_lab.py` gains `/api/health` (version + hostname) so discovery can
   tell provisioned boxes and version drift.
 - Known constraint: `uv sync` assumes the Jetson can reach PyPI; the user
@@ -44,7 +73,8 @@ Design revised with the user and rewritten in `docs/design/jetson-lab-desk.md`
 
 Next step: implement in the commit order at the end of the design doc
 (health endpoint → bootstrap/unit → `desktop/` skeleton → discovery →
-provisioning → device UI → lab UI → e2e on real hardware).
+provisioning → tunnel → device UI → lab UI → e2e on real hardware, once per
+route).
 
 ## feature: Jetson Lab Desk 설계 문서 (#2)
 
@@ -84,3 +114,33 @@ provisioning → device UI → lab UI → e2e on real hardware).
   only inside a hint string in `uvc_devices.py:505` and is never executed (so
   `v4l-utils` is dropped from bootstrap), and `/api/health` is still absent from
   `serve_uvc_lab.py` (so it stays listed as the one change to existing code).
+
+## docs: 탐색 경로 4종 + SSH 터널 경유 확정 (#2)
+
+- What: reworked the discovery, transport, credential-storage, and provisioning
+  sections of `docs/design/jetson-lab-desk.md`. Discovery grows from three steps
+  to four real wiring cases (same LAN / USB direct / LAN-port direct / Tailscale)
+  and becomes two-phase, with `Jetson.route` replaced by a `routes` list plus
+  `activeRoute`. HTTP now rides an SSH port forward instead of a directly exposed
+  port. Added where `safeStorage` output actually lands on disk, and an OS
+  subsection covering the aarch64/Ubuntu assumptions. Renumbered sections 3-6 and
+  extended the commit order to nine steps.
+- Why: the user described how they actually connect to the Jetson, and one case
+  was unreachable by the old design — on a different network via Tailscale, mDNS
+  cannot cross the tailnet and scanning 100.64.0.0/10 is not viable, so peers
+  have to come from `tailscale status --json`. That case also exposed two gaps:
+  a single `route` field would show one box as several cards once more than one
+  path is live, and each route would otherwise need its own HTTP address. Routing
+  HTTP through the SSH tunnel collapses all four cases into one path, and — since
+  the Jetson is shared hardware — avoids opening a port on it at all. The
+  credential and OS questions were the user's; both are answered in the design
+  rather than left to implementation time.
+- How verified: documentation only, no code paths touched. Two claims were
+  checked against the repo rather than assumed. `serve_uvc_lab.py:305` defaults
+  `--host` to `127.0.0.1`, which is what makes "keep loopback, tunnel instead"
+  the cheap option rather than a change of behaviour; the same argparse block
+  already exposes `--port`, so the unit can pass both and no existing code needs
+  editing. `/api/health` remains the single change to existing code. The Python
+  version constraint comes from `pyproject.toml` (`requires-python = ">=3.10"`),
+  which is what makes JetPack 5's python3.8 a real bootstrap step rather than a
+  hypothetical one.

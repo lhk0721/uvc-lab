@@ -35,15 +35,19 @@ uvc-lab 서버(`serve_uvc_lab.py`)는 헤드리스 Jetson에 띄우고 노트북
 │ renderer (React SPA)               │        │ serve_uvc_lab.py     │
 │   화면만. Node 접근 없음           │        │   FastAPI            │
 │        ↕ contextBridge (좁은 IPC)  │        │   카메라·스트림·벤치 │
-│ main (Node)                        │──SSH──▶│ systemd --user       │
-│   SSH · mDNS · 파일 · 프로비저닝   │──HTTP─▶│                      │
+│ main (Node)                        │        │   127.0.0.1:8100     │
+│   SSH · 탐색 · 파일 · 프로비저닝   │──SSH──▶│ systemd --user       │
+│   로컬 포워드 127.0.0.1:<포트> ────┼─터널──▶│   (HTTP는 터널 안으로)│
 └────────────────────────────────────┘        └──────────────────────┘
 ```
+
+Jetson 서버는 `127.0.0.1`에만 bind하고, 노트북은 SSH 터널을 통해서만 닿는다.
+자세한 근거는 아래 "HTTP 접근" 절에 있다.
 
 역할이 겹치지 않는다:
 
 - **Jetson**: 진짜 백엔드. 카메라를 물고 있는 유일한 주체.
-- **Electron main**: 로컬 특권 작업 전담. SSH·mDNS·파일시스템은 전부 여기.
+- **Electron main**: 로컬 특권 작업 전담. SSH·탐색·파일시스템은 전부 여기.
 - **renderer**: 화면만. `nodeIntegration: false`, `contextIsolation: true`.
   preload의 `contextBridge`로 노출한 함수 외에는 아무것도 못 부른다.
 
@@ -59,8 +63,9 @@ Electron + React + TypeScript
 ├─ 라우팅    TanStack Router   파일 기반 + 타입 안전. SPA 전용이라 Electron에서 그대로 동작
 ├─ 서버상태  TanStack Query    Jetson 조회
 ├─ 로컬상태  Zustand           UI 선택값
-├─ SSH       ssh2              main 전용
+├─ SSH       ssh2              main 전용. 터널(forwardOut)도 여기서
 └─ 발견      bonjour-service   mDNS, main 전용
+             tailscale CLI     `tailscale status --json`, 있을 때만
 ```
 
 ### 메타 프레임워크를 쓰지 않는 이유
@@ -88,7 +93,7 @@ uvc-lab/
 │  ├─ bootstrap.sh                         Jetson에서 도는 idempotent 설치 스크립트
 │  └─ uvc-lab.service                      systemd user unit 템플릿
 └─ desktop/                                Electron 앱
-   ├─ src/main/{index,discovery,ssh,provision}.ts
+   ├─ src/main/{index,discovery,ssh,tunnel,provision,credentials}.ts
    ├─ src/preload/index.ts
    ├─ src/renderer/                        React SPA
    └─ electron.vite.config.ts
@@ -107,22 +112,39 @@ Python 서버가 같은 빌드를 서빙하게 만들 수도 있다.
 짜면 그 목록을 억지로 하나로 눌러놓는 코드가 되고 나중에 전부 뜯게 되므로,
 처음부터 모든 상태에 Jetson id를 붙인다.
 
+그리고 한 대가 **동시에 여러 경로로 보인다.** 같은 Jetson이 WiFi에도 붙어 있고,
+USB로도 꽂혀 있고, tailnet에도 있으면 후보가 3개 나온다. 경로를 단수 필드로 잡으면
+같은 장비가 카드 3개로 뜨므로, 경로는 처음부터 목록이다.
+
 ```ts
-type JetsonId = string           // hostname 기준, 없으면 IP
+type JetsonId = string           // 장비에서 직접 받은 hostname. 못 받으면 IP
+
+type RouteKind = 'usb' | 'mdns' | 'lan-scan' | 'tailscale' | 'manual'
+
+type Route = {
+  kind: RouteKind
+  host: string                   // 이 경로에서 쓰는 주소
+  relayed?: boolean              // tailscale이 DERP relay를 타는 중인지
+}
 
 type Jetson = {
   id: JetsonId
-  host: string
+  routes: Route[]                // 동시에 여러 개
+  activeRoute: Route             // 실제로 SSH를 맺고 있는 경로
   user: string
-  route: 'usb' | 'mdns' | 'scan'
   provisioning: ProvisionState
-  serverPort: number
+  serverPort: number             // Jetson의 loopback 포트 (기본 8100)
 }
 ```
 
 - 로컬 상태: `jetsons: Record<JetsonId, Jetson>` + `activeId`
 - 서버 조회: query key에 항상 id 포함 — `['cameras', jetsonId]`
 - SSH 세션: main에서 `Map<JetsonId, Client>`
+
+경로 우선순위는 **USB > LAN/mDNS > Tailscale**이다. Tailscale은 어디서든 닿지만
+WAN을 타고, direct 연결이 안 되어 DERP relay로 넘어가면 프리뷰 프레임레이트가
+눈에 띄게 떨어진다. 여러 경로가 살아 있으면 위 순서로 고르고, 사용자가 카드에서
+다른 경로로 바꿀 수 있게 한다.
 
 UI는 당분간 한 대만 보여줘도 된다. 목록 화면은 나중에 화면 추가로 끝난다.
 
@@ -141,32 +163,113 @@ UI는 당분간 한 대만 보여줘도 된다. 목록 화면은 나중에 화�
 
 ## 1. 탐색 (main/discovery.ts)
 
-싼 것부터 순서대로 시도한다:
+### 실제로 쓰는 연결 형태 4가지
 
-1. **`192.168.55.1`** — Jetson을 USB device mode로 직결하면 항상 이 IP다.
-   TCP 22 체크만 하면 되니 가장 싸고 확실하다.
+설계의 출발점은 이론이 아니라 실제로 써 온 배선이다.
+
+| 경우 | 주소 | 탐색 방법 |
+| --- | --- | --- |
+| 같은 WiFi/LAN | DHCP 주소 | mDNS → 실패하면 서브넷 스캔 |
+| USB 직결 | `192.168.55.1` 고정 | TCP 22 직접 확인 |
+| LAN 포트 직결 | 보통 `169.254.x.x` (link-local) | mDNS (link-local에서도 동작) |
+| 다른 네트워크 | `100.x.y.z` (tailnet) | **mDNS 불가.** tailscale CLI 조회 |
+
+LAN 직결은 별도 코드가 거의 필요 없다. 양쪽 다 DHCP를 못 받으면 link-local로
+떨어지고 avahi는 그 위에서도 mDNS를 그대로 광고하므로, 스캔 대상 인터페이스
+목록에 link-local 대역만 포함시키면 된다.
+
+### 탐색은 2단계다
+
+경로마다 알아낼 수 있는 정보가 다르므로 한 번에 장비를 확정하지 못한다.
+
+**1단계 — 후보 수집.** 네 경로를 병렬로 돌려 `(주소, 경로)` 목록을 만든다.
+
+1. **USB** — `192.168.55.1`의 TCP 22만 확인. 가장 싸고 확실하다.
 2. **mDNS** — `bonjour-service`로 `_ssh._tcp` 조회. Jetson(Ubuntu)은 avahi가
    기본으로 떠 있어 `<hostname>.local`이 잡힌다.
-3. **서브넷 SSH 스캔** — 노트북이 붙은 서브넷에서 port 22를 훑고 SSH 배너로
-   Linux 장비를 추린다. 후보가 여러 개면 목록으로 보여주고 사용자가 고른다.
+3. **Tailscale** — 노트북에 `tailscale` CLI가 있으면 `tailscale status --json`을
+   읽는다. peer마다 hostname·IP·online 여부·OS·relay 여부가 다 들어 있어서
+   스캔이 아니라 조회로 끝난다. sudo도 필요 없고, CLI가 있다는 것 자체가
+   "이 노트북은 tailnet에 붙어 있다"는 판정이 된다. **tailnet 대역
+   (100.64.0.0/10)은 절대 스캔하지 않는다** — 범위가 너무 넓다.
+4. **서브넷 스캔** — 위에서 아무것도 안 나왔을 때만. 노트북이 붙은 /24와
+   link-local 대역의 port 22를 훑고 SSH 배너로 Linux 장비를 추린다.
 
-각 후보에서 `http://<ip>:<port>/api/health`가 응답하면 "이미 설치된 Jetson"으로
-판정한다. health의 버전이 노트북 쪽과 다르면 재배포 대상으로 표시한다.
+**2단계 — 정체 확인과 병합.** 각 후보에 붙어 `hostname`을 받고(설치되어 있으면
+터널 너머 `/api/health`로 한 번에 얻는다), 같은 id끼리 하나의 `Jetson`으로 합친다.
+mDNS 이름이나 tailscale 이름은 시스템 hostname과 다를 수 있으므로, id는 반드시
+장비에서 직접 받은 값을 쓴다.
 
-탐색은 앱 시작 시 + 주기적으로 반복한다. USB를 꽂으면 잠시 후 카드가 나타나고,
-뽑으면 "연결 끊김"으로 바뀐다.
+health가 응답하면 "이미 설치된 Jetson"으로 판정하고, 버전이 노트북 쪽과 다르면
+재배포 대상으로 표시한다.
+
+### 수동 추가는 반드시 있어야 한다
+
+회사 WiFi는 multicast를 막는 경우가 많고 게스트망은 클라이언트끼리 격리한다.
+그러면 mDNS도 스캔도 전부 실패한다. IP나 hostname을 직접 입력해 등록하는 경로
+(`kind: 'manual'`)를 처음부터 넣는다. 탐색이 실패해도 앱이 막다른 길이 되지 않게
+하는 안전장치다.
+
+탐색은 앱 시작 시 + 주기적으로 반복한다. USB를 꽂으면 잠시 후 경로가 추가되고,
+뽑으면 그 경로만 사라진다 — 다른 경로가 살아 있으면 장비 카드는 유지된다.
 
 ## 2. 인증 — 비밀번호
 
 - 첫 접속 시 앱 안에서 비밀번호를 입력받는다. 터미널을 열게 하지 않는다.
-- 저장은 Electron `safeStorage` (Windows DPAPI / macOS 키체인에 위임).
-  localStorage나 평문 파일은 쓰지 않는다.
 - 비밀번호는 main 프로세스 밖으로 나가지 않는다. renderer는 값을 본 적이
-  없어야 한다. IPC로는 "저장해줘 / 저장된 게 있나?"만 오간다.
+  없어야 한다. IPC로는 "저장해줘 / 저장된 게 있나? / 지워줘"만 오간다.
 - 원격 명령줄에 비밀번호를 넣지 않는다. Jetson의 `ps`에 그대로 보인다.
   sudo가 필요한 곳에서는 `sudo -S`로 stdin에 흘려넣는다.
 
-## 3. Provision (bootstrap.sh)
+### 어디에 저장되는가
+
+`safeStorage`는 **저장소가 아니라 암복호화 함수**다. `encryptString()`이 돌려주는
+버퍼를 파일에 쓰는 것은 앱의 몫이므로, 위치를 여기서 정해둔다.
+
+```
+app.getPath('userData')/credentials.json
+→ Windows: %APPDATA%\uvc-lab-desk\credentials.json
+→ macOS:   ~/Library/Application Support/uvc-lab-desk/credentials.json
+```
+
+파일에는 Jetson id별로 사용자명(평문)과 `encryptString()` 결과의 base64만 넣는다.
+키는 파일에 없다. OS가 들고 있다 — Windows는 DPAPI로 **로그인한 Windows 계정에**
+묶고, macOS는 키체인에 넣는다. 그래서 이 파일을 다른 PC나 같은 PC의 다른 계정으로
+복사해도 복호화되지 않는다.
+
+- 쓰기 전에 `safeStorage.isEncryptionAvailable()`을 확인한다. false면 **평문으로
+  떨어뜨리지 않고** 저장 자체를 포기하고 매번 입력받는다.
+- Linux에서 앱을 돌리는 경우 키링(kwallet/libsecret)이 없으면 하드코딩 키
+  fallback으로 내려갈 수 있다. `getSelectedStorageBackend()`로 확인해서
+  `basic_text`면 저장하지 않는다.
+- DB는 두지 않는다. 저장할 것은 자격증명과 장비 설정뿐이라 JSON 파일 하나로 족하다.
+  영상이나 벤치마크 이력을 남기게 되면 그때 다시 판단한다.
+
+## 3. HTTP 접근 — SSH 터널
+
+`serve_uvc_lab.py`의 기본 bind는 `127.0.0.1`이다(`--host`로 바꿀 수 있다).
+이걸 `0.0.0.0`으로 열지 않고, **loopback에 그대로 두고 SSH 터널로 접근한다.**
+
+provisioning용으로 이미 SSH 세션을 잡고 있으므로, 거기에 local port forward를
+얹는다. main이 노트북 loopback에 TCP 서버를 하나 띄우고, 들어온 연결을 `ssh2`의
+`forwardOut`으로 Jetson의 `127.0.0.1:8100`에 이어준다. renderer는 언제나
+`http://127.0.0.1:<로컬포트>`만 바라본다.
+
+이유:
+
+- **경로 4개가 하나로 합쳐진다.** USB든 WiFi든 LAN 직결이든 Tailscale이든,
+  SSH만 되면 HTTP는 그 안으로 간다. Tailscale 경우가 특히 공짜로 해결된다.
+- **Jetson 네트워크에 포트를 하나도 열지 않는다.** 이 장비는 전용이 아니므로
+  같은 망의 다른 사람에게 8100을 노출할 이유가 없다. 방화벽 설정도 변수에서 빠진다.
+- renderer가 보는 주소가 항상 고정이라 상태 관리가 단순해진다. 경로가 바뀌어도
+  (USB를 뽑고 WiFi로 넘어가도) renderer 쪽 URL은 그대로다.
+
+대가는 MJPEG 스트림이 SSH 암호화를 한 번 더 통과하는 것인데, 이 해상도·비트레이트
+에서는 문제되지 않는 수준으로 본다. 실제로 걸리면 그때 같은 LAN에 한해 직접 접속
+경로를 추가한다. `uvc_lab.html`을 브라우저로 직접 여는 비상 경로는 이 터널 포트를
+그대로 쓰면 된다.
+
+## 4. Provision (bootstrap.sh)
 
 ### 설치 위치 — 홈 안에서 끝낸다
 
@@ -191,9 +294,9 @@ Windows에 rsync가 없어도 동작한다.
 | --- | --- | --- | --- |
 | 1. 접속 | TCP 22 | 실패 처리 | — |
 | 2. 인증 | SSH 로그인 | 비밀번호 재요청 | — |
-| 3. 환경 | `uname -m`, JetPack 버전 | 지원 여부 판정 | — |
-| 4. python3 | `python3 --version` | `apt install python3` | 필요 |
-| 5. uv | `uv --version` | astral 설치 스크립트 (`$HOME`) | 불필요 |
+| 3. 환경 | `uname -m`, `/etc/os-release`, systemd 유무 | 지원 여부 판정 | — |
+| 4. uv | `uv --version` | astral 설치 스크립트 (`$HOME`) | 불필요 |
+| 5. python | `python3 --version` ≥ 3.10 | `uv python install` | 불필요 |
 | 6. payload | `VERSION` vs 앱 버전 | tar push | 불필요 |
 | 7. 의존성 | — | `uv sync` | 불필요 |
 | 8. unit | 파일 존재 + 내용 일치 | user unit 설치 + `daemon-reload` | 불필요 |
@@ -201,12 +304,35 @@ Windows에 rsync가 없어도 동작한다.
 
 6단계의 `VERSION` 파일이 멱등성의 핵심이다. 앱 버전과 같으면 전송을 건너뛴다.
 
-sudo는 4번과 9번에서만 쓰인다. 4번은 JetPack에 python3가 기본 포함이라 실제로는
-거의 걸리지 않는다. `v4l2-ctl`은 `uvc_devices.py`의 안내 문구에만 등장하고
-실행하지는 않으므로 `v4l-utils`도 설치하지 않는다. 즉 정상 경로에서 sudo는 9번
-한 번뿐이고, 그마저 장비당 한 번이다.
+**정상 경로에서 sudo는 9번 한 번뿐이고, 그마저 장비당 한 번이다.** `apt`를 아예
+쓰지 않기 때문이다. 근거는 아래 OS 절에 있다.
 
-## 4. 서버 생명주기 — systemd user unit
+### 대상 OS — Ubuntu on aarch64
+
+Jetson은 JetPack(L4T) 기반이고 그 실체는 Ubuntu다. 여기서 나오는 전제가 넷 있다.
+
+- **아키텍처는 `aarch64`다.** x86_64가 아니다. uv 설치 스크립트는 아키텍처를
+  자동 판별하고, `opencv-python`·`numpy`도 `manylinux2014_aarch64` wheel이 있어
+  소스 빌드로 떨어지지 않는다. 3단계에서 `uname -m`을 확인해 예상 밖이면 멈춘다.
+- **python3 버전이 문제가 될 수 있다.** `pyproject.toml`은 `>=3.10`인데
+  JetPack 5(Ubuntu 20.04)의 기본 python3는 3.8이다. JetPack 6(Ubuntu 22.04)은
+  3.10이라 통과한다. 낮은 경우 `apt`로 올리지 않고 **`uv python install`로 uv가
+  독립 python을 받아오게 한다** — 홈 안에서 끝나고 sudo가 필요 없으며, 시스템
+  python을 건드리지 않으니 다른 사용자의 작업도 깨지 않는다. uv를 python보다
+  먼저 설치하는 순서(4→5)가 여기서 나온다.
+- **venv의 cv2가 JetPack의 시스템 cv2를 가린다.** JetPack은 CUDA로 빌드된 OpenCV를
+  같이 깔아두는데, `.venv` 안의 `opencv-python`이 그 자리를 대신한다. 이 도구는
+  V4L2로 UVC 카메라를 여는 것이 전부라 CUDA 가속이 필요 없으므로 문제되지 않는다.
+  가속 경로가 필요해지면 그때 시스템 cv2를 쓰는 별도 판단을 한다.
+- **avahi가 없을 수 있다.** 데스크톱 이미지에는 기본으로 있지만 server 계열
+  이미지에는 빠져 있을 수 있고, 그러면 mDNS 경로만 조용히 사라진다. 3단계에서
+  확인해 "mDNS 사용 불가"로 표시만 하고, 설치를 시도하지는 않는다(sudo가 필요하고,
+  다른 경로가 이미 있다).
+
+`v4l2-ctl`은 `uvc_devices.py`의 안내 문구에만 등장하고 실행하지는 않으므로
+`v4l-utils`도 설치하지 않는다.
+
+## 5. 서버 생명주기 — systemd user unit
 
 system unit(`/etc/systemd/system/`)이 아니라 user unit을 쓴다.
 
@@ -223,10 +349,13 @@ crash 로그가 남는다.
 enable은 하지 않는다. unit은 노트북이 쏘는 start/stop의 대상일 뿐이라 Jetson을
 재부팅해도 서버는 저절로 뜨지 않는다.
 
+unit의 `ExecStart`는 `--host 127.0.0.1 --port <포트>`로 loopback에 묶는다. 외부
+인터페이스에는 열지 않는다(3절).
+
 | 동작 | 노트북에서 일어나는 일 |
 | --- | --- |
-| Start | `systemctl --user start uvc-lab` → health 응답 대기 → Open Lab 활성화 |
-| Stop | `systemctl --user stop uvc-lab` → 카메라·포트 해제 확인 |
+| Start | `systemctl --user start uvc-lab` → 터널 연결 → health 응답 대기 → Open Lab 활성화 |
+| Stop | 터널 닫기 → `systemctl --user stop uvc-lab` → 카메라·포트 해제 확인 |
 | 상태 | `systemctl --user is-active uvc-lab` |
 | Reinstall | tar push → bootstrap 재실행 → 떠 있었다면 restart |
 
@@ -247,21 +376,25 @@ user unit이므로 Jetson 쪽 서버는 그대로 떠 있다. 앱을 다시 켜�
 `is-active`로 "이미 돌고 있음"을 알아내고 그 상태로 복귀한다. PID 파일 방식보다
 회수가 깔끔하다.
 
-## 5. 다른 프로그램과의 공존
+## 6. 다른 프로그램과의 공존
 
 Jetson이 전용 장비가 아니므로 두 가지를 다뤄야 한다.
 
-- **포트 충돌** — 8100이 이미 쓰이고 있을 수 있다. 기동 전에 확인하고, 포트를
-  unit 파일의 인자로 바꿀 수 있게 한다. 선택한 포트는 Jetson 레코드에 저장해서
-  health 조회에도 같은 값을 쓴다.
+- **포트 충돌** — loopback bind라 충돌 범위가 Jetson의 `127.0.0.1:8100` 하나로
+  줄었지만, 같은 장비에서 다른 사람이 8100을 쓰고 있을 가능성은 남는다. 기동 전에
+  확인하고, 포트를 unit 파일의 인자로 바꿀 수 있게 한다. 선택한 포트는 Jetson
+  레코드(`serverPort`)에 저장해서 터널 목적지에도 같은 값을 쓴다. 노트북 쪽
+  로컬 포트는 이와 별개로 비어 있는 것을 골라 쓴다.
 - **카메라 선점** — 다른 프로세스가 `/dev/video*`를 잡고 있을 수 있다. 지금
   `serve_uvc_lab.py`는 프리뷰↔벤치마크만 중재하고 외부 프로세스는 모른다.
   장치 열기 실패를 "다른 프로세스가 사용 중"으로 구분해서 UI에 그대로 보여준다.
 
 ## 화면 구성
 
-- **장비 목록/카드** — hostname, IP, 연결 경로(USB/mDNS/스캔), 설치된 버전,
-  서버 상태 표시등. 버튼: Start / Stop / Open Lab / Reinstall.
+- **장비 목록/카드** — hostname, 설치된 버전, 서버 상태 표시등, 그리고 **살아 있는
+  경로 전부**(USB/mDNS/스캔/Tailscale/수동)와 지금 쓰는 경로 표시. Tailscale이면
+  direct인지 relay인지도 같이 보여준다 — 프리뷰가 느릴 때 원인이 여기서 바로
+  드러난다. 버튼: Start / Stop / Open Lab / Reinstall. 목록 옆에 "IP로 직접 추가".
 - **로그 패널** — provision·기동 중 bootstrap 출력이 실시간으로 흐른다. 막히면
   여기서 바로 보인다.
 - **랩 화면** — 카메라·해상도·포맷·파라미터를 골라 Jetson 서버로 보내고,
@@ -272,6 +405,12 @@ Jetson이 전용 장비가 아니므로 두 가지를 다뤄야 한다.
 - `uv sync` 단계에서 Jetson이 PyPI에 닿아야 한다. 오프라인 fallback(노트북에서
   aarch64 wheel을 미리 받아 같이 push)은 만들지 않는다. 온라인 가정으로 단순하게
   시작하고, 실제로 필요해지면 그때 추가한다.
+- **Tailscale 경로에서는 프리뷰가 느리다.** WAN을 타는 데다 direct 연결이 실패해
+  DERP relay로 넘어가면 더 느려진다. 화질·프레임레이트를 낮추는 저대역폭 모드는
+  지금 만들지 않고, 카드에 relay 여부만 표시해 원인을 알 수 있게 한다.
+- SSH 터널을 쓰므로 서버가 떠 있어도 SSH가 끊기면 화면이 끊긴다. 재연결은 앱이
+  맡고, 그동안 카드는 "연결 끊김"으로 둔다. Jetson 쪽 서버는 linger 덕분에 계속
+  살아 있으므로 재연결하면 그대로 이어진다.
 - Electron 배포 크기가 120MB+ 다. 랩 도구라 감수한다.
 
 ## 구현 순서 (커밋 단위 제안)
@@ -281,8 +420,10 @@ Jetson이 전용 장비가 아니므로 두 가지를 다뤄야 한다.
    여기까지가 Electron 없이도 값이 나오는 구간이다.
 3. `desktop/` 뼈대 — electron-vite + React + TS, main/preload/renderer 경계와
    빈 화면까지.
-4. main: 탐색(`discovery.ts`) — 3단계, 결과를 renderer에 push.
+4. main: 탐색(`discovery.ts`) — 4경로 후보 수집 + 병합, 결과를 renderer에 push.
 5. main: SSH + 프로비저닝(`ssh.ts`, `provision.ts`) — 9단계 상태 머신.
-6. renderer: 장비 카드 + 로그 패널 — Start/Stop/Reinstall 동작.
-7. renderer: 랩 화면 — 카메라 제어와 벤치마크.
-8. 실제 Jetson으로 end-to-end 검증: 탐색 → provision → Start → 랩 → Stop.
+6. main: SSH 터널(`tunnel.ts`) — 로컬 포트 → Jetson loopback 포워드.
+7. renderer: 장비 카드 + 로그 패널 — Start/Stop/Reinstall 동작.
+8. renderer: 랩 화면 — 카메라 제어와 벤치마크.
+9. 실제 Jetson으로 end-to-end 검증: 탐색 → provision → Start → 랩 → Stop.
+   경로별로 한 번씩 (USB 직결 / 같은 WiFi / Tailscale).
