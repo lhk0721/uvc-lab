@@ -126,6 +126,24 @@ results; the wiring diagram renders observation as solid lines and declarations
 (FSIN) as dashed; and test profiles carry a `requires` block so an impossible
 combination is refused before it runs rather than producing numbers.
 
+Wiring diagram scoped down with the user: nodes are the Jetson and the cameras
+only (the hub is a label on the trunk, not a node, but the port number stays on
+each camera node because the port IS the identity). No drag & drop. The Jetson is
+placed by default and cannot be removed; its only editable fields are the two
+GPIO pin assignments (BOARD 7 trigger out, BOARD 11 strobe in — defaults from
+rack-tracker's FSIN wiring doc). Cameras are added from detection, or added
+manually as **unbound** entries (no `camId` yet) when planning wiring before the
+hardware is plugged in. Per-camera signal checkboxes come from a connector
+profile; for this hardware that profile is `jst-3p-strb-trg-gnd`, confirmed
+against the board silkscreen (`STRB`/`TRG`/`GND`) and the vendor manual's pin
+definition. `GND` is not user-toggleable (it follows the others), `TRG` is
+disabled on `webcam-std` cameras since wiring it cannot make the mode work, and
+the first `TRG`/`STRB` check raises the 1.8V domain warning once — 3.3V destroys
+the pin and the app cannot see whether a level shifter is present. The rig schema
+therefore replaces the single `trigger.declared`/`targets` pair with per-camera
+`connector` + `wiring` maps and a host-level `trigger` block holding the pins;
+the trigger target list is derived from `wiring.TRG`, never stored twice.
+
 Next step: implement in the revised 13-step order at the end of the spec. Steps 2
 and 3 (by-path enumeration + control-profile detection, then `/api/rig`) come
 before any Electron work because they need no app and catch the class of problem
@@ -262,3 +280,34 @@ found above.
   3-camera hardware-trigger profile must be refused before it runs. No code was
   changed on the Jetson and no camera setting was left modified — the probes read
   control ranges and restored nothing because nothing was written.
+
+## docs: 배선 다이어그램 명세 — 노드 축소와 신호 체크박스 (#2)
+
+- What: rewrote section 6 of `docs/design/lab-desk-spec.md` into six subsections
+  (what is drawn, the Jetson node, camera add/remove, signal checkboxes, the
+  voltage warning, rendering rules) and changed the rig schema in section 3.2 to
+  match: each camera gains `connector` and a `wiring` map, and the host-level
+  `trigger` block now holds the GPIO pin assignments instead of a `declared` flag
+  and a `targets` list. Section 7.4's entry condition and section 12's open items
+  were updated to follow.
+- Why: the user scoped the diagram down. Only the Jetson and the cameras are
+  nodes, there is no drag & drop, the Jetson is placed by default since it is the
+  only host, and the interaction is add camera / remove selected plus checkboxes
+  for which connector signals are wired — actual wiring stays the user's job. Two
+  things had to be decided rather than transcribed. The hub cannot be a node under
+  that scope, but the port number is the camera's identity (section 2.1), so the
+  hub became a label on the trunk while the port stayed on each camera node.
+  And "add camera" conflicts with the rule that the diagram renders detection, so
+  a manually added camera is an explicit unbound entry with no `camId` until a
+  device appears on a port — binding asks the user whenever more than one port
+  could match, because section 1.1 leaves the app no basis to decide.
+- How verified: the signal list was not invented. rack-tracker
+  `docs/etc/camera-sync/fsin-trigger-wiring.md` records the 3-pin JST silkscreen
+  order as `STRB` / `TRG` / `GND` with `TRG` being the same pin the sensor
+  datasheet calls FSIN, and the vendor manual's section 9 pin definition
+  (3=Trigger, 4=Strobe/Flash, 5=GND) agrees; the same document is the source for
+  the 1.8V domain, for the BOARD 7 / BOARD 11 pin defaults, and for the measured
+  strobe level (1.627V) that justifies leaving `STRB` selectable regardless of
+  control profile. The `TRG`-disabled-on-`webcam-std` rule follows from the
+  control-range measurement already recorded in section 1.5. No new hardware
+  access was needed for this change.
