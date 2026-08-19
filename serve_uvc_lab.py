@@ -26,6 +26,9 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
+import os
+import socket
 import sys
 import threading
 import time
@@ -62,6 +65,13 @@ from uvc_lab_presets import (
 
 PAGE = ROOT / "uvc_lab.html"
 SNAPSHOT_DIR = ROOT / "tmp" / "uvc"
+
+# Box-local state (docs/design/lab-desk-spec.md §3.1): the rig lives on the
+# Jetson because the wiring is a property of the box, not of any laptop.
+# UVC_LAB_HOME exists so tests can point this at a scratch directory.
+STATE_DIR = Path(os.environ.get("UVC_LAB_HOME") or Path.home() / ".uvc-lab")
+RIG_PATH = STATE_DIR / "rig.json"
+VERSION_FILE = STATE_DIR / "VERSION"
 
 
 class DeviceBroker:
@@ -130,6 +140,18 @@ def index():
     return FileResponse(PAGE)
 
 
+@app.get("/api/health")
+def api_health():
+    # Discovery calls this to tell a provisioned box (and version drift) from
+    # a bare SSH host. The version is the marker the bootstrap writes; a
+    # checkout run by hand has no marker and honestly reports "dev".
+    try:
+        version = VERSION_FILE.read_text(encoding="utf-8").strip() or "dev"
+    except OSError:
+        version = "dev"
+    return {"app": "uvc-lab", "version": version, "hostname": socket.gethostname()}
+
+
 @app.get("/api/devices")
 def api_devices(max_index: int = 5):
     try:
@@ -137,12 +159,48 @@ def api_devices(max_index: int = 5):
             devices = list_devices(max_index=max_index)
     except RuntimeError as exc:
         raise HTTPException(409, str(exc))
+    # camId / controlProfile / usb are None on the index-scan fallback
+    # (Windows dev machine); on the Jetson they come from by-path enumeration.
+    # opened=False means the node exists but another process holds it — the
+    # client must render that as "busy", not as an absent camera (spec §2.3).
     return [
-        {"index": d.index, "width": d.width, "height": d.height,
+        {"index": d.index, "camId": d.cam_id, "opened": d.opened,
+         "width": d.width, "height": d.height,
          "signature": d.signature, "os_name": d.os_name,
-         "os_name_is_heuristic": d.os_name_is_heuristic}
+         "os_name_is_heuristic": d.os_name_is_heuristic,
+         "controlProfile": d.control_profile, "usb": d.usb}
         for d in devices
     ]
+
+
+@app.get("/api/rig")
+def api_rig_get():
+    # 404 rather than an empty object: the client's `no-rig` state (spec §5)
+    # must be distinguishable from a registered-but-empty rig.
+    if not RIG_PATH.is_file():
+        raise HTTPException(404, "no rig registered on this box")
+    try:
+        return JSONResponse(json.loads(RIG_PATH.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(500, f"rig.json unreadable: {exc}")
+
+
+@app.put("/api/rig")
+def api_rig_put(rig: dict):
+    # Validation is deliberately shallow. The schema (spec §3.2) is owned by
+    # the client and will evolve; the server only refuses what it could never
+    # serve back sensibly.
+    if not isinstance(rig.get("rigVersion"), int):
+        raise HTTPException(422, "rigVersion (int) is required")
+    if not isinstance(rig.get("cameras"), list):
+        raise HTTPException(422, "cameras (list) is required")
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = RIG_PATH.with_name(RIG_PATH.name + ".tmp")
+    tmp.write_text(json.dumps(rig, ensure_ascii=False, indent=2) + "\n",
+                   encoding="utf-8")
+    # Atomic replace: a crash mid-write can never truncate the existing rig.
+    tmp.replace(RIG_PATH)
+    return rig
 
 
 @app.get("/api/presets")

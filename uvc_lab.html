@@ -205,9 +205,13 @@ async function loadDevices() {
   $("cam").innerHTML = '<option>불러오는 중…</option>';
   try {
     devices = await api("/api/devices");
-    $("cam").innerHTML = devices.map(d =>
-      `<option value="${d.index}">index ${d.index} — ${d.signature || `${d.width}x${d.height}`}</option>`
-    ).join("") || '<option value="">장치 없음</option>';
+    // opened=false는 노드는 있는데 다른 프로세스가 잡고 있다는 뜻 —
+    // 목록에서 숨기지 않고 "사용 중"으로 보여준다.
+    $("cam").innerHTML = devices.map(d => {
+      const port = d.camId ? `${d.camId} ` : `index ${d.index} `;
+      const desc = d.opened ? (d.signature || `${d.width}x${d.height}`) : "사용 중";
+      return `<option value="${d.index}">${port}— ${desc}</option>`;
+    }).join("") || '<option value="">장치 없음</option>';
   } catch (e) {
     $("cam").innerHTML = '<option value="">오류</option>';
     $("s-detail").textContent = e.message;

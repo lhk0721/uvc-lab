@@ -33,9 +33,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
+import re
 import shutil
 import statistics
+import struct
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -274,16 +277,31 @@ class DeviceInfo:
     os_name_is_heuristic: bool = False
     signature: str | None = None
     modes: list[dict] = field(default_factory=list)
+    # Linux by-path identity (None on Windows / index-scan fallback). The port
+    # IS the identity on this hardware — the USB descriptor carries no unique
+    # per-unit id, so cam_id is the ID_PATH port suffix, e.g. "usb-0:1.1".
+    cam_id: str | None = None
+    id_path: str | None = None
+    control_profile: str | None = None
+    usb: dict | None = None
 
     def describe(self) -> str:
         name = self.os_name or "(name unavailable)"
         if self.os_name_is_heuristic:
             name += "  [heuristic]"
+        port = ""
+        if self.cam_id:
+            port = f"\n    port    : {self.cam_id}  profile={self.control_profile}"
+        if not self.opened:
+            return (
+                f"index {self.index}: BUSY — node exists but another process holds it"
+                f"{port}\n    os name : {name}"
+            )
         sig = f"  -> {self.signature}" if self.signature else ""
         return (
             f"index {self.index}: {self.width}x{self.height} "
             f"fourcc={self.fourcc!r} driver_fps={self.driver_fps:.0f}\n"
-            f"    os name : {name}\n"
+            f"    os name : {name}{port}\n"
             f"    signature: max {self.width}x{self.height}{sig}"
         )
 
@@ -324,6 +342,177 @@ def _linux_v4l2_cameras() -> dict[int, str]:
         except (ValueError, OSError):
             continue
     return names
+
+
+# ---- Linux by-path enumeration -------------------------------------------
+# Why not index scanning: each UVC camera creates TWO /dev/video* nodes (the
+# even one captures, the odd one is a metadata node that never opens), so a
+# fixed max_index misses cameras once enough are plugged in, and a scan cannot
+# list a camera another process is holding. /dev/v4l/by-id is deliberately NOT
+# used: on this hardware every camera reports the same USB descriptor identity,
+# the by-id names collide, and udev keeps a mixed subset of symlinks — see
+# docs/design/lab-desk-spec.md §1.2. The USB port path (ID_PATH) is the only
+# stable key, so the port is the camera's identity (§2.1-2.2).
+
+# ID_PATH "platform-3610000.usb-usb-0:1.1:1.0" splits into the host's USB
+# controller ("platform-3610000.usb", stored once as rig.host.usbRoot) and the
+# port path minus the config.interface suffix ("usb-0:1.1"), which is camId.
+_ID_PATH_RE = re.compile(r"^(?P<root>.+)-(?P<cam>usb-\d+:[\d.]+):\d+\.\d+$")
+_BY_PATH_LINK_RE = re.compile(r"^(?P<idp>.+)-video-index\d+$")
+
+
+def _usb_descriptor(node: Path) -> dict | None:
+    """USB descriptor fields from sysfs, walking up from the video node to the
+    first ancestor that has ``idVendor`` (the USB device directory).
+
+    These fields describe the *kind* of device, never the individual unit:
+    on this hardware serial is a firmware version string shared by every
+    camera (spec §1.1). They go into ``rig.cameras[].expect`` for the
+    changed-device check, nothing more.
+    """
+    try:
+        resolved = node.resolve()
+    except OSError:
+        return None
+    for parent in resolved.parents:
+        if not (parent / "idVendor").is_file():
+            continue
+
+        def read(name: str) -> str | None:
+            try:
+                return (parent / name).read_text().strip()
+            except OSError:
+                return None
+
+        return {
+            "vid_pid": f"{read('idVendor')}:{read('idProduct')}",
+            "manufacturer": read("manufacturer"),
+            "product": read("product"),
+            "bcd_device": read("bcdDevice"),
+            "serial": read("serial"),
+        }
+    return None
+
+
+def _linux_by_path_cameras() -> list[dict]:
+    """One entry per physical camera, grouped by ID_PATH, nothing opened.
+
+    Walks ``/sys/class/video4linux/*`` for the node list and each node's
+    ``index`` attribute (0 = capture node, the rest are metadata), and takes
+    ID_PATH from the udev-maintained ``/dev/v4l/by-path`` symlink names.
+    Because no device is opened, cameras held by another process still appear
+    in the list — the caller reports them as busy instead of absent.
+    """
+    sys_root = Path("/sys/class/video4linux")
+    by_path = Path("/dev/v4l/by-path")
+    if not (sys_root.is_dir() and by_path.is_dir()):
+        return []
+
+    # /dev/videoN name -> ID_PATH, from links like
+    #   platform-3610000.usb-usb-0:1.1:1.0-video-index0 -> ../../video0
+    id_paths: dict[str, str] = {}
+    try:
+        links = list(by_path.iterdir())
+    except OSError:
+        return []
+    for link in links:
+        m = _BY_PATH_LINK_RE.match(link.name)
+        if not m:
+            continue
+        try:
+            id_paths[link.resolve().name] = m.group("idp")
+        except OSError:
+            continue
+
+    cameras: dict[str, dict] = {}
+    for node in sorted(sys_root.glob("video*")):
+        id_path = id_paths.get(node.name)
+        if id_path is None:
+            continue  # not reached over USB (e.g. a CSI camera) — out of scope
+        try:
+            node_index = int((node / "index").read_text().strip())
+        except (OSError, ValueError):
+            continue
+        cam = cameras.setdefault(id_path, {
+            "id_path": id_path, "capture": None, "name": None, "usb": None,
+        })
+        if node_index == 0 and cam["capture"] is None:
+            cam["capture"] = int(node.name.removeprefix("video"))
+            try:
+                cam["name"] = (node / "name").read_text().strip()
+            except OSError:
+                pass
+            cam["usb"] = _usb_descriptor(node)
+
+    out = []
+    for id_path, cam in cameras.items():
+        if cam["capture"] is None:
+            continue  # metadata nodes only — no way to capture from this
+        m = _ID_PATH_RE.match(id_path)
+        cam["cam_id"] = m.group("cam") if m else id_path
+        cam["usb_root"] = m.group("root") if m else None
+        out.append(cam)
+    out.sort(key=lambda c: c["cam_id"])
+    return out
+
+
+# ---- control profiles ------------------------------------------------------
+# V4L2 control ids from videodev2.h.
+_V4L2_CID_HUE = 0x00980903
+_V4L2_CID_BACKLIGHT_COMPENSATION = 0x0098091C
+# struct v4l2_queryctrl: u32 id, u32 type, char name[32], s32 minimum/maximum/
+# step/default_value, u32 flags, u32 reserved[2] — 68 bytes.
+_QUERYCTRL_FMT = "II32siiiiIII"
+# VIDIOC_QUERYCTRL = _IOWR('V', 36, struct v4l2_queryctrl)
+#                  = (3 << 30) | (68 << 16) | (ord('V') << 8) | 36
+_VIDIOC_QUERYCTRL = 0xC0445624
+_V4L2_CTRL_FLAG_DISABLED = 0x0001
+
+
+def _v4l2_ctrl_range(fd: int, cid: int) -> tuple[int, int] | None:
+    import fcntl  # Linux-only module; this path never runs on Windows
+
+    req = struct.pack(_QUERYCTRL_FMT, cid, 0, b"", 0, 0, 0, 0, 0, 0, 0)
+    try:
+        res = fcntl.ioctl(fd, _VIDIOC_QUERYCTRL, req)
+    except OSError:
+        return None
+    vals = struct.unpack(_QUERYCTRL_FMT, res)
+    if vals[8] & _V4L2_CTRL_FLAG_DISABLED:
+        return None
+    return (vals[3], vals[4])  # minimum, maximum
+
+
+def control_profile(dev_node: str) -> str:
+    """Weak identity from V4L2 control ranges (spec §2.4).
+
+    Individual units cannot be told apart (§1.1), but *kinds* can: the
+    trigger-capable module repurposes Backlight Compensation as its
+    trigger-mode switch, so its range is exactly 0..3, with Hue 1..200
+    carrying the trigger frequency. An ordinary webcam control map
+    (Backlight 16..160) means no trigger firmware — wiring FSIN to it does
+    nothing. Anything else reports ``unknown`` honestly instead of being
+    passed off as a recognised device.
+
+    Querying control ranges works on a device another process is streaming
+    from — only streaming is exclusive, ioctl QUERYCTRL is not.
+    """
+    if not IS_LINUX:
+        return "unknown"
+    try:
+        fd = os.open(dev_node, os.O_RDWR | os.O_NONBLOCK)
+    except OSError:
+        return "unknown"
+    try:
+        backlight = _v4l2_ctrl_range(fd, _V4L2_CID_BACKLIGHT_COMPENSATION)
+        hue = _v4l2_ctrl_range(fd, _V4L2_CID_HUE)
+    finally:
+        os.close(fd)
+    if backlight == (0, 3) and hue == (1, 200):
+        return "trigger-v1"
+    if backlight == (16, 160):
+        return "webcam-std"
+    return "unknown"
 
 
 def probe_max_resolution(index: int, api: int | None = None) -> tuple[int, int] | None:
@@ -384,27 +573,85 @@ def probe_modes(index: int, api: int | None = None) -> list[dict]:
 
 
 def list_devices(max_index: int = 5, api: int | None = None, with_modes: bool = False) -> list[DeviceInfo]:
+    """All cameras the OS can see.
+
+    On Linux this enumerates by USB port path (``max_index`` is ignored —
+    by-path has no upper bound and never mistakes a metadata node for a
+    camera); elsewhere, and on a Linux box without ``/dev/v4l/by-path``,
+    the index scan remains as the fallback.
+    """
     api = default_backend() if api is None else api
+    if IS_LINUX:
+        cams = _linux_by_path_cameras()
+        if cams:
+            return _list_devices_by_path(cams, api, with_modes)
+    return _list_devices_index_scan(max_index, api, with_modes)
+
+
+def _probe_open(info: DeviceInfo, api: int, with_modes: bool) -> None:
+    """Fill width/height/fourcc/signature by actually opening the device.
+    Leaves ``info.opened`` False when the open or first read fails."""
+    cap = cv2.VideoCapture(info.index, api)
+    if not cap.isOpened():
+        cap.release()
+        return
+    ok, _ = cap.read()
+    if ok:
+        info.opened = True
+        info.width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        info.height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        info.fourcc = fourcc_of(cap)
+        info.driver_fps = cap.get(cv2.CAP_PROP_FPS)
+    cap.release()
+    if not info.opened:
+        return
+    if with_modes:
+        info.modes = probe_modes(info.index, api)
+        if info.modes:
+            best = max(info.modes, key=lambda m: m["width"] * m["height"])
+            info.width, info.height = best["width"], best["height"]
+    else:
+        # The startup mode is usually 640x480 and identifies nothing, so
+        # find the real ceiling — that is the part of the signature that
+        # separates an AR0234 from a webcam.
+        best = probe_max_resolution(info.index, api)
+        if best:
+            info.width, info.height = best
+    info.signature = SIGNATURES.get((info.width, info.height))
+
+
+def _list_devices_by_path(cams: list[dict], api: int, with_modes: bool) -> list[DeviceInfo]:
+    devices: list[DeviceInfo] = []
+    for cam in cams:
+        index = cam["capture"]
+        info = DeviceInfo(
+            index=index,
+            opened=False,
+            os_name=cam.get("name"),
+            cam_id=cam["cam_id"],
+            id_path=cam["id_path"],
+            usb=cam.get("usb"),
+            control_profile=control_profile(f"/dev/video{index}"),
+        )
+        _probe_open(info, api, with_modes)
+        # A camera held by another process stays in the list with
+        # opened=False — the server must say "busy", not pretend the port
+        # is empty (spec §2.3).
+        devices.append(info)
+    return devices
+
+
+def _list_devices_index_scan(max_index: int, api: int, with_modes: bool) -> list[DeviceInfo]:
     linux_names = _linux_v4l2_cameras() if IS_LINUX else {}
     win_names = _windows_pnp_cameras() if IS_WINDOWS else []
 
     devices: list[DeviceInfo] = []
     for index in range(max_index):
-        cap = cv2.VideoCapture(index, api)
-        if not cap.isOpened():
-            cap.release()
-            continue
-        ok, _ = cap.read()
-        info = DeviceInfo(
-            index=index,
-            opened=True,
-            width=int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
-            height=int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-            fourcc=fourcc_of(cap),
-            driver_fps=cap.get(cv2.CAP_PROP_FPS),
-        )
-        cap.release()
-        if not ok:
+        info = DeviceInfo(index=index, opened=False)
+        _probe_open(info, api, with_modes)
+        if not info.opened:
+            # In a scan, "did not open" and "does not exist" are the same
+            # observation — only by-path enumeration can tell them apart.
             continue
 
         if index in linux_names:
@@ -417,19 +664,6 @@ def list_devices(max_index: int = 5, api: int | None = None, with_modes: bool = 
                 info.os_name = win_names[slot].get("Name")
                 info.os_name_is_heuristic = True
 
-        if with_modes:
-            info.modes = probe_modes(index, api)
-            if info.modes:
-                best = max(info.modes, key=lambda m: m["width"] * m["height"])
-                info.width, info.height = best["width"], best["height"]
-        else:
-            # The startup mode is usually 640x480 and identifies nothing, so
-            # find the real ceiling — that is the part of the signature that
-            # separates an AR0234 from a webcam.
-            best = probe_max_resolution(index, api)
-            if best:
-                info.width, info.height = best
-        info.signature = SIGNATURES.get((info.width, info.height))
         devices.append(info)
     return devices
 

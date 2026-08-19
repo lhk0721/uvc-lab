@@ -144,10 +144,17 @@ therefore replaces the single `trigger.declared`/`targets` pair with per-camera
 `connector` + `wiring` maps and a host-level `trigger` block holding the pins;
 the trigger target list is derived from `wiring.TRG`, never stored twice.
 
-Next step: implement in the revised 13-step order at the end of the spec. Steps 2
-and 3 (by-path enumeration + control-profile detection, then `/api/rig`) come
-before any Electron work because they need no app and catch the class of problem
-found above.
+Implementation has started. Spec steps 1-3 (the Jetson-server side, no Electron)
+are coded: `/api/health`, by-path enumeration + control-profile detection in
+`uvc_devices.py`, and `/api/rig` read/write. Health and rig endpoints and the
+Windows index-scan fallback are verified locally. **Pending: step 2's success
+criterion — exactly 3 cameras on `usb-0:1.1/1.2/1.4` with profiles
+`trigger-v1`/`trigger-v1`/`webcam-std` — requires the live Jetson, which was
+unreachable on every route (link-local, USB, Tailscale) on 2026-08-19. Run that
+check the next time the box is up, before building anything on top of step 2.**
+
+Next step: verify step 2 on the live Jetson, then step 4 (`deploy/bootstrap.sh`
++ `deploy/uvc-lab.service`) and onward per the 13-step order.
 
 ## feature: Jetson Lab Desk 설계 문서 (#2)
 
@@ -311,3 +318,41 @@ found above.
   control profile. The `TRG`-disabled-on-`webcam-std` rule follows from the
   control-range measurement already recorded in section 1.5. No new hardware
   access was needed for this change.
+
+## feat: 서버 선행 3단계 — /api/health · by-path 열거 · /api/rig (#2)
+
+- What: implemented spec §11 steps 1-3, the parts that need no Electron.
+  `serve_uvc_lab.py` gains `GET /api/health` (app name, version from the
+  `~/.uvc-lab/VERSION` marker the future bootstrap will write — "dev" without
+  it — and hostname) and `GET/PUT /api/rig` against `~/.uvc-lab/rig.json`
+  (404 when absent so the client's `no-rig` state is distinguishable, shallow
+  validation of `rigVersion`/`cameras`, atomic tmp+replace write, state dir
+  overridable via `UVC_LAB_HOME` for tests). `uvc_devices.py` replaces the
+  index scan on Linux with by-path enumeration per §2.2 — nodes grouped by
+  ID_PATH from `/dev/v4l/by-path` symlink names, capture node = sysfs
+  `index==0`, `camId` = port suffix via regex, USB descriptor read from sysfs
+  ancestors — plus control-profile detection per §2.4 (`trigger-v1` /
+  `webcam-std` / `unknown`) via a raw `VIDIOC_QUERYCTRL` ioctl on Backlight
+  Compensation and Hue (`v4l2-ctl` does not exist on the box). Busy cameras
+  now stay in the list with `opened=false` instead of vanishing, `/api/devices`
+  returns `camId`/`controlProfile`/`usb`/`opened`, and `uvc_lab.html` labels
+  unopened devices "사용 중". The index scan remains as the fallback for
+  Windows and for Linux boxes without `/dev/v4l/by-path`; the shared open-probe
+  logic was factored into `_probe_open` so both paths stay identical.
+- Why: §1.4 showed the index scan finds 3 cameras only by luck (nodes are 2×
+  cameras; a 4th camera would be missed at `max_index=5`), and §1.5 showed the
+  control ranges are the only way to see that the port-4 camera has no trigger
+  firmware. These two steps are ordered first precisely because they catch that
+  class of problem before any app exists. `/api/rig` comes now because the rig
+  belongs on the box (§3.1) and the endpoint is independently verifiable.
+- How verified: locally on Windows via `uv run`. `/api/health` returns
+  version+hostname; `/api/rig` returns 404 before PUT, rejects a body missing
+  `rigVersion` or `cameras` with 422, round-trips a Korean-labeled rig
+  byte-identically, and writes pretty-printed UTF-8 JSON to the `UVC_LAB_HOME`
+  dir (first PUT attempt failed only because git-bash curl sent cp949 — resent
+  as a UTF-8 file body). Struct size (68) for `v4l2_queryctrl` and both
+  ID_PATH regexes asserted against the measured Jetson strings. The index-scan
+  fallback still finds the laptop webcam with heuristic naming intact.
+  **NOT yet verified: the by-path path on the real Jetson (3 cameras on
+  `usb-0:1.1/1.2/1.4`, profiles `trigger-v1`×2 + `webcam-std`) — the box was
+  unreachable on all routes today. That check gates step 2's done-ness.**
