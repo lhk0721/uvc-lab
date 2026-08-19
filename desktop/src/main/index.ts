@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { join } from 'node:path'
+import { Discovery } from './discovery'
 
 // The renderer runs fully locked down; everything OS-facing (SSH, mDNS,
 // filesystem, credentials) stays in this process and crosses only through
@@ -35,12 +36,29 @@ function createWindow(): void {
   }
 }
 
+// Discovery result is main-owned push state: main sends, the renderer
+// subscribes (`discovery:changed`). No identify hook yet — entries stay
+// provisional (keyed by address) until ssh.ts lands in step 7.
+const discovery = new Discovery({
+  onUpdate: (jetsons) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send('discovery:changed', jetsons)
+    }
+  }
+})
+
 app.whenReady().then(() => {
   ipcMain.handle('app:info', () => ({
     version: app.getVersion(),
     electron: process.versions.electron,
     node: process.versions.node
   }))
+
+  ipcMain.handle('discovery:list', () => discovery.snapshot())
+  ipcMain.handle('discovery:scan', () => discovery.scanNow())
+  ipcMain.handle('discovery:addManual', (_event, host) => discovery.addManual(String(host)))
+  ipcMain.handle('discovery:removeManual', (_event, host) => discovery.removeManual(String(host)))
+  discovery.start()
 
   createWindow()
 
@@ -52,3 +70,5 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
+
+app.on('will-quit', () => discovery.stop())

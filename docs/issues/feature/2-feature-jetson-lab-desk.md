@@ -175,11 +175,30 @@ vite is pinned to ^7 because electron-vite 5.0.0's peer range stops there.
 electron-builder packaging is not part of this step. Verified offline: typecheck
 + build clean, dev run showed the window and completed the IPC roundtrip.
 
+Step 6 is coded: `src/main/discovery.ts`, phase 1 of the design's two-phase
+discovery — candidates collected over the four wiring routes (USB `192.168.55.1`
+TCP-22 probe, persistent `bonjour-service` `_ssh._tcp` browser, `tailscale
+status --json` query filtered to online Linux peers with `relayed` derived from
+`CurAddr`, and a subnet-scan fallback over the laptop's /24s plus the
+link-local /16 that runs only when everything else came up empty) plus the
+manual escape hatch, merged into `DiscoveredJetson` entries and pushed to the
+renderer over `discovery:changed` (`list`/`scan`/`addManual`/`removeManual`
+invoke channels alongside). Phase 2 identification is an injectable `identify`
+hook that ssh.ts supplies in step 7; until then entries are provisional, keyed
+by address — mDNS/tailscale names are display-only because the design forbids
+trusting them as identity. The module never imports electron, so its logic runs
+under plain Node for verification. Two real-world cases are handled explicitly:
+a logged-out tailscale CLI reports `BackendState: "NoState"` with `Peer: null`
+(observed on this laptop), and probe sockets use `on('error')` so a late RST
+during scans cannot crash the main process. Route expiry is cycle-stamped
+(usb/tailscale/lan-scan drop when their source stops reporting; a card with
+other live routes survives), mdns follows goodbye packets, manual never expires.
+
 Next step: with the Jetson on — verify step 2 (3 cameras on `usb-0:1.1/1.2/1.4`,
-profiles `trigger-v1`×2 + `webcam-std`) and run bootstrap for real; meanwhile
-steps 6-8 (main: `discovery.ts`, `ssh.ts`/`provision.ts`, `tunnel.ts`) can
-proceed offline, with their Jetson-dependent halves batched for the same
-at-the-box session.
+profiles `trigger-v1`×2 + `webcam-std`), run bootstrap for real, and see the box
+actually discovered per route; meanwhile steps 7-8 (main: `ssh.ts`/
+`provision.ts`, `tunnel.ts`) can proceed offline, with their Jetson-dependent
+halves batched for the same at-the-box session.
 
 ## feature: Jetson Lab Desk 설계 문서 (#2)
 
@@ -464,3 +483,51 @@ at-the-box session.
   `electron` in node_modules without its binary, so the retried install
   skipped postinstall and `npm run dev` died with "Electron uninstall"; fixed
   by running `node node_modules/electron/install.js` by hand.
+
+## feat: main 탐색 — 4경로 후보 수집 + 병합 (#2)
+
+- What: spec §11 step 6 — `desktop/src/main/discovery.ts` plus its wiring.
+  Phase 1 of the two-phase discovery: the four wiring routes run in parallel
+  each cycle (USB direct = TCP-22 probe of `192.168.55.1`; mDNS = persistent
+  `bonjour-service` `_ssh._tcp` browser, which covers same-LAN and link-local
+  direct alike; Tailscale = `tailscale status --json` filtered to online Linux
+  peers, `relayed` = no direct path in `CurAddr`, tailnet never scanned; subnet
+  scan = SSH-banner sweep of the laptop's /24s and, only when an interface
+  actually sits in it, the link-local /16 — run solely at startup/explicit
+  rescan when the cheap routes found nothing). Manual add/remove by address is
+  the required escape hatch. Candidates merge into `DiscoveredJetson`
+  (id/identified/routes, routes ordered USB > mDNS > lan-scan > manual >
+  Tailscale); identity comes from an injectable `identify` hook that step 7's
+  ssh.ts will supply, so entries are provisional (address-keyed) until then —
+  mDNS/tailscale names are display-only per the design. main pushes snapshots
+  over `discovery:changed`; `discovery:list/scan/addManual/removeManual` are
+  invoke channels; preload/env.d.ts mirror the surface; Home lists entries with
+  route badges plus rescan/manual-add controls (real cards are step 9). Route
+  expiry is cycle-stamped so USB unplug drops that route while a card with
+  other live routes survives; mdns follows goodbye packets.
+- Why: step 6 is the first main-process module and the base the SSH/provision
+  steps attach to. `discovery.ts` deliberately imports no electron API so the
+  collection/merge logic is verifiable under plain Node, and the design's
+  warning that mDNS/tailscale names can differ from the real hostname is
+  enforced by construction: nothing but the box's own answer can merge two
+  routes into one Jetson.
+- How verified: success criterion set up front — (1) typecheck + build, (2)
+  pure logic offline, (3) dev-run IPC roundtrip. `npm run typecheck` and
+  `electron-vite build` pass clean on the committed code. A plain-Node check
+  script (Node 24 type stripping, no test framework added) passed 8/8:
+  tailscale parsing against this laptop's real CLI output (logged-out backend:
+  `BackendState "NoState"`, `Peer null` → no routes) and a synthetic Running
+  sample (online-linux filter, relayed derivation), scanTargets /24 + link-local
+  gating (self excluded, the real box's `169.254.203.230` inside the swept
+  band), mapPool order/concurrency, tcpProbe/readSshBanner against local
+  listeners, and merge via a stub identify (two addresses → one identified
+  entry; null-identify stays provisional; manual remove/reject). The banner
+  check crashing the first test run exposed a real bug: probe sockets used
+  `once('error')`, so a second error (late RST on Windows) would have been an
+  unhandled 'error' crashing the whole main process — fixed with `on('error')`
+  + settled guard. Dev smoke with temporary console lines: `[main] window
+  loaded`, `discovery:list` roundtrip, `addManual('10.77.77.77')` →
+  `discovery:changed` with the manual card → `removeManual` → empty list, zero
+  error lines; temp lines removed and typecheck + build re-run. Pending at the
+  box: actually discovering the Jetson per route (USB / mDNS / link-local /
+  Tailscale) — batched with the step-2 and bootstrap verifications.
