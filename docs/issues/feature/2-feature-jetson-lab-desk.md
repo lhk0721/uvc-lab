@@ -9,7 +9,9 @@
 ## Current State
 
 Design revised with the user and rewritten in `docs/design/jetson-lab-desk.md`
-(Korean, human-facing). Implementation has not started. Decisions locked in:
+(Korean, human-facing). Steps 1-12 are implemented and step 13 (verification
+against the real Jetson) ran on 2026-08-19 over the LAN-direct route.
+Decisions locked in:
 
 - Laptop-side app ("Lab Desk"): **Electron + React + TypeScript** under
   `desktop/`, built with electron-vite, packaged with electron-builder.
@@ -342,18 +344,40 @@ under a trigger profile. And a run is blocked while the editor has unsaved
 changes: the result records the profile id, so the stored profile and the one
 that produced the numbers must be the same thing.
 
-Next step (step 13): with the Jetson on — verify step 2 (3 cameras on
-`usb-0:1.1/1.2/1.4`, profiles `trigger-v1`×2 + `webcam-std`), see the box
-discovered per route, run a real provision end-to-end from the card (aarch64
-path, real linger/sudo, uv install branch), see real HTTP flow through the
-tunnel to `serve_uvc_lab.py`, register the real rig from the screen (three
-simultaneous previews, port identity, the section 5 match against the saved
-rig), drive the lab screen against real cameras (the V4L2 control ioctls, which
-no off-Jetson test can exercise; a real mode substitution; a preset run
-preempting live previews), and run a test profile against the real set — where
-the section 8 gate should refuse the trigger example on port 4 by itself. Every
-offline step is now done; section 7.4's trigger verification still waits for a
-step of its own, and it needs the wiring to be confirmed first (section 12).
+Step 13 ran on 2026-08-19 over the LAN-direct route (link-local, cable to the
+laptop). What passed on the real box: the 9-step install (aarch64 branch, real
+sudo and linger, uv already present, second run idempotent), HTTP over the SSH
+tunnel, by-path enumeration finding three cameras as `trigger-v1` x2 +
+`webcam-std` exactly as section 1.5 predicted, rig registration written to
+`~/.uvc-lab/rig.json`, the section 5 match reporting a moved camera as
+"P1 missing + P3 unregistered", the "무시하고 진행" path recording
+`rigStatus: missing` on the run, section 7.2's requested-vs-observed
+substitution (640x480 -> 640x360), section 7.3's V4L2 control read and write,
+a benchmark run preempting live previews, and section 8's gate refusing the
+spec's own trigger example on the box's own evidence (port 4 is `webcam-std`).
+
+Seven app defects were found and fixed in the process, each one only reachable
+with real hardware: link-local routing (a logged-out Tailscale adapter owns the
+band), the link-local sweep starving the app's own provision, sudo validated in
+a different exec channel from the command it authorises, enumeration stealing
+the cameras from live previews on every window focus, the card believing its
+own memory after a Jetson reboot, the tunnel opening only as a side effect of
+시작, and run polling stopping while the window is in the background. A camera
+that fails to answer no longer wedges the server (bounded probe), and a preview
+that never receives a frame now says so.
+
+Hardware conclusion: **hub port 1 is faulty.** The camera on it failed USB
+enumeration in a retry storm (`error -71`) that killed the Tegra xHCI
+controller (`HC died`), taking all three cameras and the internal Bluetooth
+down with it. The same camera with the same cable works in hub port 3, at ~9fps
+against ~15fps for the other two. `camId` therefore changed from `usb-0:1.1` to
+`usb-0:1.3` and the rig was re-registered to match.
+
+Not done: the USB, mDNS, and Tailscale routes were not exercised (the user
+scoped step 13 to LAN-direct). mDNS cannot work on this box as it stands —
+avahi advertises no services — and whether provisioning should publish one is
+open. Section 7.4 (trigger verification) still needs a step of its own and the
+wiring confirmed first.
 
 ## feature: Jetson Lab Desk 설계 문서 (#2)
 
@@ -1160,3 +1184,20 @@ step of its own, and it needs the wiring to be confirmed first (section 12).
 - How verified: used for the whole of today's verification. With the variable
   set, `/json/list` offers the renderer target and a driver script evaluates in
   the page; without it, Electron opens no debugging port.
+
+## docs: 13단계 실물 검증 기록 — 통과 항목과 허브 포트 불량 (#2)
+
+- What: recorded step 13's outcome in `docs/design/lab-desk-spec.md` (the step
+  itself, plus two open items: the faulty hub port and the missing mDNS
+  advertisement) and rewrote this document's Current State to match what the
+  box actually did.
+- Why: the spec's step list still read as a plan, and the Current State still
+  claimed implementation had not started — both were three commits out of date
+  after the verification run. The two new open items are facts the next session
+  must not rediscover: hub port 1 kills the USB controller, and mDNS discovery
+  cannot work on this box until something advertises a service.
+- How verified: documentation only. Every claim in the new text comes from a
+  measurement recorded in the fix commits above — the kernel log lines
+  (`error -71`, `HC died`), the port-to-node mapping before and after the move
+  (`usb-0:1.1` at `/dev/video0` in the morning, `/dev/video4` after the fault),
+  the frame rates (9fps vs 15fps), and avahi's empty service directory.
