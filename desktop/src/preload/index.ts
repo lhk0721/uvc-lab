@@ -1,6 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { DiscoveredJetson } from '../main/discovery.ts'
-import type { ProvisionRunOptions, ProvisionState, ServerHealth } from '../main/provision.ts'
+import type {
+  ProvisionRunOptions,
+  ProvisionState,
+  ServerHealth,
+  ServerStatus
+} from '../main/provision.ts'
 import type { TunnelInfo } from '../main/tunnel.ts'
 
 // The renderer sees exactly this object and nothing else. Device/rig channels

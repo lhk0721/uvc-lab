@@ -321,6 +321,31 @@ export async function startServer(session: SshSession, port: number): Promise<Se
   throw new Error('server started but /api/health never answered')
 }
 
+export interface ServerStatus {
+  active: boolean
+  health?: ServerHealth
+}
+
+/**
+ * What the box says right now. The app's memory of its own start/stop cannot
+ * survive a Jetson reboot or a `systemctl --user stop` typed by someone else
+ * — measured after a real reboot, the card still showed "running" and left
+ * the start button disabled, with no way back short of pressing stop first.
+ */
+export async function serverStatus(session: SshSession, port: number): Promise<ServerStatus> {
+  const active = await session.exec(`${XDG} systemctl --user is-active uvc-lab`)
+  if (active.stdout.trim() !== 'active') return { active: false }
+  const health = await session.exec(`curl -s -m 2 http://127.0.0.1:${port}/api/health`)
+  if (health.code !== 0 || !health.stdout.trim()) return { active: true }
+  try {
+    return { active: true, health: JSON.parse(health.stdout) as ServerHealth }
+  } catch {
+    // Something answers on the port but it is not our server: active, and
+    // deliberately without a health record rather than with a made-up one.
+    return { active: true }
+  }
+}
+
 export async function stopServer(session: SshSession): Promise<void> {
   const stop = await session.exec(`${XDG} systemctl --user stop uvc-lab`)
   if (stop.code !== 0) {

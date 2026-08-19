@@ -1107,3 +1107,28 @@ step of its own, and it needs the wiring to be confirmed first (section 12).
   longer than the deadline and then streamed fine. One limit is recorded rather
   than fixed: a blocking V4L2 read cannot be cancelled, so a camera that dies
   mid-stream holds its capture until the server is restarted.
+
+## fix: 서버 상태는 장비에 묻고, 살아 있으면 터널도 연다 (#2)
+
+- What: `serverStatus(session, port)` in provision.ts (`systemctl --user
+  is-active` plus `/api/health`), exposed as the `server:status` IPC channel
+  and `window.labDesk.server.status`. The device card polls it every 10s for
+  an installed box and reconciles its own phase from the answer instead of
+  from what this app last did; the same effect opens the tunnel when the
+  server is running and no tunnel exists. The design's lifecycle section gains
+  the rule.
+- Why: both fell out of the Jetson reboot that the USB fault forced. After the
+  box came back the card still read "running" and left 시작 disabled, so the
+  only way to restart the server was to press 정지 first — the app was showing
+  a memory, not a fact, and the same would happen whenever anyone stops the
+  unit outside the app. The tunnel had the mirror-image problem: it only ever
+  opened as a side effect of pressing 시작, so a server that was already
+  running left every preview reading "터널 없음" with no button that would fix
+  it.
+- How verified: against the real reboot. With the box freshly rebooted and the
+  server down, the card now reports not-running and 시작 comes back enabled
+  (`startDisabled: false`), and with the server already up the tunnel appears
+  by itself — `tunnel.list()` returns `18101 -> 18100` without anyone pressing
+  시작, and the rig screen's previews render through it. The poll is one
+  `systemctl --user is-active` over the pooled SSH session per interval, and it
+  never overwrites a start/stop this card is in the middle of.

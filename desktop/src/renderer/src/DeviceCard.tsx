@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { useStore } from 'zustand'
@@ -36,6 +36,9 @@ const SERVER_LABEL: Record<ServerPhase, string> = {
 // The Jetson's default loopback port; the real value comes from provision
 // state (or an already-open tunnel) once known.
 const DEFAULT_SERVER_PORT = 18100
+// One `systemctl --user is-active` over the pooled SSH session per interval —
+// cheap enough to keep the card honest without polling the box hard.
+const SERVER_STATUS_POLL_MS = 10_000
 
 export function DeviceCard({ jetson }: { jetson: DiscoveredJetson }) {
   const queryClient = useQueryClient()
@@ -71,6 +74,34 @@ export function DeviceCard({ jetson }: { jetson: DiscoveredJetson }) {
     provisionBusy(provision?.phase) || server.phase === 'starting' || server.phase === 'stopping'
   const installed = provision?.phase === 'ready' || server.phase === 'running'
   const serverPort = provision?.serverPort ?? tunnel?.remotePort ?? DEFAULT_SERVER_PORT
+
+  // The card used to show whatever this app last did, which a Jetson reboot
+  // (or anyone else's `systemctl --user stop`) makes a lie: after a real
+  // reboot it still read "running" and 시작 stayed disabled. So ask the box.
+  const status = useQuery({
+    queryKey: ['serverStatus', effectiveId, host],
+    queryFn: () => window.labDesk.server.status(effectiveId, host as string, serverPort),
+    enabled: !!host && installed && !busy,
+    refetchInterval: SERVER_STATUS_POLL_MS,
+    retry: false
+  })
+  useEffect(() => {
+    const answer = status.data
+    // Never overwrite a transition this card is in the middle of.
+    if (!answer || busy) return
+    if (answer.active && server.phase !== 'running') {
+      setServer(effectiveId, { phase: 'running', ...(answer.health && { health: answer.health }) })
+    } else if (!answer.active && server.phase === 'running') {
+      setServer(effectiveId, { phase: 'stopped' })
+    }
+    // The tunnel used to open only as a side effect of pressing 시작, so a
+    // server that was already running (app restarted, or someone started the
+    // unit by hand) left every preview reading "터널 없음" with no way to fix
+    // it short of stopping the server first.
+    if (answer.active && !tunnel && host) {
+      void window.labDesk.tunnel.open(effectiveId, host, serverPort)
+    }
+  }, [status.data, busy, server.phase, effectiveId, setServer, tunnel, host, serverPort])
 
   const runProvision = (opts: {
     auth?: ProvisionRunOptions['auth']

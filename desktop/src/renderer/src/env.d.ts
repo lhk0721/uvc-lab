@@ -52,6 +52,11 @@ interface ServerHealth {
   hostname?: string
 }
 
+interface ServerStatus {
+  active: boolean
+  health?: ServerHealth
+}
+
 interface TunnelInfo {
   jetsonId: string
   host: string

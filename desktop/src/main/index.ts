@@ -3,7 +3,13 @@ import { join, resolve } from 'node:path'
 import { Discovery } from './discovery.ts'
 import { CredentialStore, type CredentialCipher } from './credentials.ts'
 import { makeIdentify, SshPool, type SshSession } from './ssh.ts'
-import { Provisioner, startServer, stopServer, type ProvisionRunOptions } from './provision.ts'
+import {
+  Provisioner,
+  serverStatus,
+  startServer,
+  stopServer,
+  type ProvisionRunOptions
+} from './provision.ts'
 import { TunnelManager } from './tunnel.ts'
 import { jetsonGet, jetsonPost, jetsonPut, JetsonHttpError } from './jetson-http.ts'
 
@@ -132,6 +138,11 @@ app.whenReady().then(() => {
     const session = await pool.acquire(String(jetsonId), String(host))
     if (!session) throw new Error('no SSH session and no stored credentials')
     return startServer(session, Number(port))
+  })
+  ipcMain.handle('server:status', async (_event, jetsonId, host, port) => {
+    const session = await pool.acquire(String(jetsonId), String(host))
+    if (!session) return { active: false }
+    return serverStatus(session, Number(port))
   })
   ipcMain.handle('server:stop', async (_event, jetsonId, host) => {
     const session = await pool.acquire(String(jetsonId), String(host))
