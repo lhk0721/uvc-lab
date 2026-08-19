@@ -671,6 +671,51 @@ def set_control(dev_node: str, key: str, value: int) -> int:
     return int(value) if got is None else got
 
 
+# --- mains flicker -----------------------------------------------------------
+#
+# The DCXIN/DECXIN modules power up with power_line_frequency = 50 Hz. On 60 Hz
+# mains that mismatch shows up as frame-to-frame brightness swing: measured on
+# the rig under auto-exposure, one camera swung 39.1% peak-to-peak at ~8.85 Hz
+# and dropped to 2.4% once this control was set to 60 Hz.
+#
+# It stays invisible until auto-exposure settles on a short exposure, because
+# swing scales inversely with integration time (3.9ms -> 48%, 31.2ms -> 0.6%).
+# So two identical cameras in the same room disagree purely on where they point,
+# and re-aiming one is enough to make it start "breaking".
+#
+# V4L2 only. OpenCV reaches this control through neither DirectShow nor MSMF, so
+# on Windows it has to be set in the vendor utility or the DirectShow property
+# page.
+POWER_LINE_DISABLED, POWER_LINE_50HZ, POWER_LINE_60HZ = 0, 1, 2
+_POWER_LINE_MENU = {50: POWER_LINE_50HZ, 60: POWER_LINE_60HZ}
+
+# Mains frequency where this rig lives. Korea is 60 Hz; set to 50 elsewhere.
+MAINS_HZ = 60
+
+
+def set_power_line_frequency(index: int, mains_hz: int = MAINS_HZ) -> int | None:
+    """Pin the sensor's anti-flicker filter to the local mains frequency.
+
+    Returns the value the driver kept, or None when the control is unreachable —
+    the normal case on Windows, and not worth aborting a capture over. Written to
+    the device rather than to the capture handle, so it holds whether it runs
+    before or after the device is opened, and it persists across replug (these
+    modules keep UVC control state).
+    """
+    menu = _POWER_LINE_MENU.get(mains_hz)
+    if menu is None:
+        raise ValueError(f"mains_hz must be 50 or 60, got {mains_hz!r}")
+    if not IS_LINUX:
+        return None
+    try:
+        return set_control(f"/dev/video{index}", "power_line_frequency", menu)
+    except (OSError, RuntimeError):
+        # EBUSY when a streaming consumer holds the node, ENOTTY on a metadata
+        # node. Neither is a reason to refuse to open the camera.
+        return None
+
+
+
 def probe_max_resolution(index: int, api: int | None = None) -> tuple[int, int] | None:
     """Largest honoured resolution, found by descending — a few opens, not a full sweep.
 
@@ -946,6 +991,16 @@ def open_capture(index: int, width: int, height: int, fourcc: str = "MJPG",
     cap = cv2.VideoCapture(index, api)
     if not cap.isOpened():
         raise RuntimeError(f"cannot open camera index {index} via {backend_name(api)}")
+    # Before anything else: a 50/60Hz mismatch makes every brightness measurement
+    # downstream oscillate, and it is silent unless you look for it.
+    if IS_LINUX:
+        readback = set_power_line_frequency(index)
+        if readback is None:
+            print(f"  warn: could not set power_line_frequency on /dev/video{index} — "
+                  f"expect brightness flicker if mains is not {MAINS_HZ}Hz", file=sys.stderr)
+        elif readback != (POWER_LINE_60HZ if MAINS_HZ == 60 else POWER_LINE_50HZ):
+            print(f"  warn: requested {MAINS_HZ}Hz anti-flicker, device reports menu "
+                  f"value {readback}", file=sys.stderr)
     # Order is load-bearing: size and fps first, FOURCC last. See
     # FOURCC_MUST_BE_SET_LAST above — any set() after it reverts the format.
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
