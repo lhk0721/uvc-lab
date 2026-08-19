@@ -153,8 +153,21 @@ criterion — exactly 3 cameras on `usb-0:1.1/1.2/1.4` with profiles
 unreachable on every route (link-local, USB, Tailscale) on 2026-08-19. Run that
 check the next time the box is up, before building anything on top of step 2.**
 
-Next step: verify step 2 on the live Jetson, then step 4 (`deploy/bootstrap.sh`
-+ `deploy/uvc-lab.service`) and onward per the 13-step order.
+Step 4 is also coded: `deploy/bootstrap.sh` (steps 3-9 of the design as
+check -> act -> verify; exit 3 = only linger's one sudo remains) and
+`deploy/uvc-lab.service` (user unit template, `@PORT@` substituted at install,
+no `[Install]` section so it can never be enabled). `.gitattributes` pins both
+to LF so the CRLF working copy on Windows can never reach the box. Verified in
+WSL Ubuntu under a throwaway `$HOME` with `uname`/`systemctl`/`loginctl`/`sudo`
+shimmed: full run, idempotent re-run, port-change reinstall, and an ExecStart
+smoke test (`.venv/bin/python serve_uvc_lab.py` answered `/api/health` with the
+VERSION marker bootstrap wrote). Untestable off-Jetson and still pending there:
+the aarch64 path, real `systemctl --user`/linger behavior, and the uv install
+branch (the WSL harness pre-installed x86 uv).
+
+Next step: with the Jetson on — verify step 2 (3 cameras on `usb-0:1.1/1.2/1.4`,
+profiles `trigger-v1`×2 + `webcam-std`) and run bootstrap for real; meanwhile
+step 5 (`desktop/` skeleton) can proceed offline.
 
 ## feature: Jetson Lab Desk 설계 문서 (#2)
 
@@ -356,3 +369,48 @@ Next step: verify step 2 on the live Jetson, then step 4 (`deploy/bootstrap.sh`
   **NOT yet verified: the by-path path on the real Jetson (3 cameras on
   `usb-0:1.1/1.2/1.4`, profiles `trigger-v1`×2 + `webcam-std`) — the box was
   unreachable on all routes today. That check gates step 2's done-ness.**
+
+## feat: bootstrap.sh + systemd user unit (#2)
+
+- What: added `deploy/bootstrap.sh` and `deploy/uvc-lab.service`, spec §11
+  step 4. The script runs on the box as the target user and covers design
+  steps 3-9, each as check -> act -> verify: environment (hard-stops unless
+  `aarch64`, requires a reachable user systemd manager, reports avahi/mDNS
+  availability without installing anything), uv (astral installer into
+  `~/.local/bin` only when absent), python (system `python3` >= 3.10, else
+  `uv python install` — never apt), payload presence + VERSION marker write
+  (the push-or-skip decision against the marker stays app-side), `uv sync`
+  followed by an import check of cv2/fastapi/uvicorn from the venv, unit
+  install (template rendered with `sed s/@PORT@/`, content-compared before
+  overwrite, `daemon-reload` + `systemctl --user cat` verify only when it
+  actually changed), and linger (tries `sudo -n`, otherwise prints the one
+  command and exits 3 so the app knows to run its `sudo -S` path — the script
+  never touches passwords). Sets `XDG_RUNTIME_DIR` and prepends
+  `~/.local/bin` itself, the two non-interactive-SSH traps. The unit binds
+  loopback only, runs `.venv/bin/python` directly (not `uv run`, which could
+  re-resolve at start), has no `[Install]` section so enabling is impossible,
+  and sets `Restart=no` so a crash surfaces instead of re-grabbing
+  /dev/video* in a loop. `.gitattributes` pins both files to LF — the
+  Windows working copy is CRLF, which would break the shebang on the box —
+  and the script carries the executable bit in the index.
+- Why: step 4 is the last piece that needs no Electron; with it, a bare box
+  becomes start/stop-able by hand over SSH, which is exactly the state the
+  app's provision step (step 7) automates later. The user asked for it now
+  because the Jetson is off and unreachable until they return, so offline
+  steps go first and the hardware-gated verifications batch up for one
+  session at the box.
+- How verified: functionally in WSL Ubuntu 24.04 (real systemd) under a
+  throwaway `$HOME=/tmp/uvclab-bt` with four shims on PATH — `uname -m` ->
+  aarch64, `systemctl` (show-environment/daemon-reload ok, `cat` = unit file
+  exists), `loginctl` -> Linger=no, `sudo` -> fail — plus a pre-installed
+  x86 uv so the aarch64-faked installer branch is skipped. Fresh run passed
+  3-8 and exited 3 at linger with the correct instruction; re-run was
+  idempotent (unit "already installed", VERSION rewritten, `uv sync` no-op);
+  `--port 18105` re-rendered and reinstalled the unit; and the unit's exact
+  ExecStart line started the server, whose `/api/health` returned the
+  VERSION bootstrap had written and `/api/rig` 404'd as expected. The
+  harness initially copied only 5 payload files and the server failed on
+  `import bench_uvc_capture` — a harness gap, not a script bug (the real
+  push is `git archive` of the whole repo), fixed by copying all `*.py`.
+  Still pending on the real Jetson: the aarch64 path, real user-manager +
+  linger behavior, and the uv install branch.

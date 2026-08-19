@@ -1,0 +1,25 @@
+# systemd USER unit for the uvc-lab server — installed by deploy/bootstrap.sh
+# to ~/.config/systemd/user/uvc-lab.service with @PORT@ substituted.
+#
+# There is deliberately NO [Install] section: the unit is only ever the target
+# of start/stop commands sent by Lab Desk, and without [Install] it cannot be
+# enabled, so a Jetson reboot can never autostart the server on shared
+# hardware. Lingering (bootstrap step 9) keeps the user manager alive across
+# SSH disconnects; it does not start services by itself.
+
+[Unit]
+Description=UVC camera lab server (uvc-lab)
+
+[Service]
+Type=exec
+WorkingDirectory=%h/.uvc-lab/repo
+# The venv python directly, not `uv run`: uv could touch the network or
+# re-resolve at start time — the server must start with exactly what
+# bootstrap installed. Loopback bind only; HTTP arrives via SSH tunnel.
+ExecStart=%h/.uvc-lab/repo/.venv/bin/python serve_uvc_lab.py --host 127.0.0.1 --port @PORT@
+# No auto-restart: the laptop app is the operator. A crash must surface in
+# `systemctl --user is-active` and journal, not be papered over by a loop
+# that re-grabs /dev/video* while someone is debugging.
+Restart=no
+TimeoutStopSec=10
+Environment=PYTHONUNBUFFERED=1

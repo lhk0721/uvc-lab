@@ -1,1 +1,3 @@
 .githooks/* text eol=lf
+deploy/bootstrap.sh text eol=lf
+deploy/uvc-lab.service text eol=lf
