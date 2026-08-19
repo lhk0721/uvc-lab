@@ -318,17 +318,42 @@ does not exist yet, and section 12 still records that the wiring itself is
 unconfirmed on this box. It therefore needs its own step, after the wiring is
 seen to exist.
 
-Next step: with the Jetson on — verify step 2 (3 cameras on `usb-0:1.1/1.2/1.4`,
-profiles `trigger-v1`×2 + `webcam-std`), see the box discovered per route, run
-a real provision end-to-end from the card (aarch64 path, real linger/sudo, uv
-install branch), see real HTTP flow through the tunnel to `serve_uvc_lab.py`,
-register the real rig from the screen (three simultaneous previews, port
-identity, the section 5 match against the saved rig), and drive the lab screen
-against real cameras (the V4L2 control ioctls, which no off-Jetson test can
-exercise; a real mode substitution; a preset run preempting live previews);
-meanwhile step 12 (test profiles + the `requires` gate, spec section 8) can
-proceed offline, and section 7.4's trigger verification waits for a step of its
-own.
+Step 12 is coded: test profiles and the `requires` gate (spec section 8).
+`profiles.ts` is React-free and holds the gate itself - `planProfile` turns a
+profile plus the live devices and rig into the reasons it cannot run, the
+things it will not honour, and the preset parameters it becomes.
+`ProfilePanel.tsx` renders it inside the lab screen: a profile list, an editor
+seeded from the ports that are plugged in right now, a per-camera row (enabled,
+mode, free-running or hardware trigger), the preset parameters the camera block
+does not derive, and the gate underneath - evaluated on every render, which is
+what makes the check happen while the profile is being *looked at* rather than
+when the run button is pressed. The spec's own example is refused here, with
+its own message: port 4 carries `webcam-std`, so it cannot be a trigger target.
+A profile lives on the Jetson (`~/.uvc-lab/profiles.json`, new `GET`/`PUT
+/api/profiles`) for the same reason the rig does - it names port paths, which
+only mean something on that box - and a run started from one records both the
+profile id and the section 5 `rigStatus`.
+
+Two decisions inside that gate are worth keeping written down. A camera set to
+`trigger: "hardware"` is refused even when its firmware and wiring are in
+order, because nothing in this app can drive the FSIN line yet (section 7.4);
+running it anyway would measure a free-running camera and file the numbers
+under a trigger profile. And a run is blocked while the editor has unsaved
+changes: the result records the profile id, so the stored profile and the one
+that produced the numbers must be the same thing.
+
+Next step (step 13): with the Jetson on — verify step 2 (3 cameras on
+`usb-0:1.1/1.2/1.4`, profiles `trigger-v1`×2 + `webcam-std`), see the box
+discovered per route, run a real provision end-to-end from the card (aarch64
+path, real linger/sudo, uv install branch), see real HTTP flow through the
+tunnel to `serve_uvc_lab.py`, register the real rig from the screen (three
+simultaneous previews, port identity, the section 5 match against the saved
+rig), drive the lab screen against real cameras (the V4L2 control ioctls, which
+no off-Jetson test can exercise; a real mode substitution; a preset run
+preempting live previews), and run a test profile against the real set — where
+the section 8 gate should refuse the trigger example on port 4 by itself. Every
+offline step is now done; section 7.4's trigger verification still waits for a
+step of its own, and it needs the wiring to be confirmed first (section 12).
 
 ## feature: Jetson Lab Desk 설계 문서 (#2)
 
@@ -940,3 +965,55 @@ own.
   cameras, a real driver substitution, and a preset run preempting live
   previews. Section 7.4 (trigger verification) is out of this step's scope and
   recorded above as needing its own.
+
+## feat: 테스트 프로필 + requires 게이트 (#2)
+
+- What: spec section 11 step 12 - `desktop/src/renderer/src/profiles.ts` (the
+  gate and the profile-to-parameters translation) and `ProfilePanel.tsx` (the
+  editor, rendered inside the lab screen), plus what they need underneath:
+  `GET`/`PUT /api/profiles` on `serve_uvc_lab.py` storing
+  `~/.uvc-lab/profiles.json`, a `profileId` on every run record, the
+  `lab:profiles` / `lab:saveProfiles` relay channels, and `profileId` carried
+  through `lab:runStart`. `LabScreen` now has one `startRun` used by both the
+  bench panel and a profile, shows a `프로필: <id>` badge next to the existing
+  `rig: <status>` one, and finally surfaces a failed run poll instead of
+  rendering nothing.
+- Why: section 8's `requires` is the whole point of the step - an impossible
+  combination has to be refused *while the profile is on screen*, not after it
+  has produced numbers. The decisions that are not obvious: (1) profiles live
+  on the Jetson next to `rig.json`, because a profile names port paths and a
+  port path is a fact about that box, not about a laptop; (2) a camera marked
+  `trigger: "hardware"` is refused even when firmware and wiring are fine,
+  because nothing here can drive the FSIN line yet (section 7.4) and running it
+  anyway would file free-running numbers under a trigger profile; (3) a run is
+  blocked while the editor is dirty, since the result records the profile id
+  and the stored profile must be the thing that produced the numbers; (4) the
+  camera block is the authority for index/resolution/fourcc/fps, so those are
+  not offered again as free parameters, and anything the chosen preset has no
+  knob for is reported as a dropped value rather than silently ignored.
+- How verified: success criterion set up front - (1) typecheck + build, (2)
+  both sides offline, (3) a DOM-driven dev smoke. `npm run typecheck` and
+  `electron-vite build` pass clean on the committed code. Python checks 6/6
+  (an absent profiles.json reads as an empty set rather than a 404, the PUT
+  round-trips atomically with Korean intact and no `.tmp` left behind, a
+  hand-edited bare list is still readable, every validation refusal leaves the
+  saved file untouched - including duplicate ids, which would make two setups
+  indistinguishable in the run records - and a run records the profile it came
+  from); step 11's 9/9 still pass. Plain-Node checks 12/12 on the gate: the
+  spec's own example refused with its own message (`우 카메라(P4)는 트리거
+  모드를 지원하지 않습니다 ... webcam-std`), wiring and pulse-source
+  refusals separated from firmware ones, a runnable profile turning into exactly
+  the expected preset parameters, cameras that disagree on a mode refused for a
+  single-mode preset, a single-camera preset refusing two cameras, absent and
+  held cameras named the way the rig screen names them, dropped-field warnings,
+  and id rules. Dev smoke through the real DOM against the mock Jetson: install
+  -> start -> 랩 -> past the section 5 gate -> a box with no profiles saying so
+  -> 새 프로필 seeded with the three detected ports -> the section 8 example
+  built in the editor and refused with 4 reasons and the run button disabled ->
+  P4 dropped and the triggers set free -> gate ok but the run still blocked
+  until saved -> saved to the box and listed -> run started with
+  `indices [0, 2]` and the camera block's mode -> result showing both
+  `프로필: sync-2cam-free` and `rig: no-rig`, its log in the shared panel.
+  Three consecutive runs, zero error lines, driver removed before commit.
+  Pending at the box (batched): the gate against the real three cameras, where
+  the trigger example must refuse port 4 on its own evidence.

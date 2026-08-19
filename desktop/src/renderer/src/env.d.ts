@@ -195,6 +195,39 @@ interface Preset {
   params: PresetParam[]
 }
 
+// ---- test profiles (spec section 8) ---------------------------------------
+
+interface ProfileMode {
+  fourcc: string
+  width: number
+  height: number
+  /** null = do not ask for a rate; the driver picks (spec 7.2). */
+  fps: number | null
+}
+
+interface ProfileCamera {
+  enabled: boolean
+  mode: ProfileMode | null
+  /** "hardware" makes this camera a trigger target (spec 8). */
+  trigger: 'free' | 'hardware'
+}
+
+interface ProfileRequires {
+  controlProfile?: ControlProfile | null
+  trigger?: 'fsin-hardware' | null
+}
+
+interface TestProfile {
+  id: string
+  title: string
+  preset: string
+  requires?: ProfileRequires
+  /** Keyed by camId — the port is the identity (spec 2.1). */
+  cameras: Record<string, ProfileCamera>
+  /** Preset parameters the camera block does not derive (seconds, etc.). */
+  params?: Record<string, unknown>
+}
+
 interface RunResult {
   headline: string
   status: 'ok' | 'warn' | 'fail'
@@ -215,6 +248,8 @@ interface RunState {
   error: string | null
   /** The rig state the run was started under (spec 5). */
   rigStatus?: string | null
+  /** The test profile the run came from, if any (spec 8). */
+  profileId?: string | null
 }
 
 interface Window {
@@ -272,11 +307,23 @@ interface Window {
         serverPort: number,
         change: { index: number; key: string; value: number }
       ): Promise<{ index: number; key: string; value: number }>
+      profiles(jetsonId: string, host: string, serverPort: number): Promise<TestProfile[]>
+      saveProfiles(
+        jetsonId: string,
+        host: string,
+        serverPort: number,
+        profiles: TestProfile[]
+      ): Promise<TestProfile[]>
       runStart(
         jetsonId: string,
         host: string,
         serverPort: number,
-        request: { preset: string; params: Record<string, unknown>; rigStatus?: string | null }
+        request: {
+          preset: string
+          params: Record<string, unknown>
+          rigStatus?: string | null
+          profileId?: string | null
+        }
       ): Promise<{ run_id: string }>
       run(jetsonId: string, host: string, serverPort: number, runId: string): Promise<RunState>
     }

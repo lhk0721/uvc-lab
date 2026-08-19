@@ -557,3 +557,76 @@ footer {
   padding: 0.15rem 0.5rem;
   text-align: right;
 }
+
+/* test profiles (spec 8) */
+.lab-profiles {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.profile-head,
+.profile-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.profile-editor {
+  border: 1px solid #3a3f4b;
+  border-radius: 4px;
+  padding: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.profile-meta {
+  display: flex;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+.profile-meta label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+}
+.profile-cameras {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.profile-camera {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+}
+.profile-camera-name {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 15rem;
+}
+.trigger-select {
+  min-width: 8rem;
+}
+.profile-gate {
+  border-left: 3px solid #3a3f4b;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.9rem;
+}
+.profile-gate.blocked {
+  border-left-color: #e06c75;
+}
+.profile-gate.ok {
+  border-left-color: #7bc96f;
+  color: #8a919e;
+}
+.profile-gate ul {
+  margin: 0.2rem 0 0;
+  padding-left: 1.1rem;
+}

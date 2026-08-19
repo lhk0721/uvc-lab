@@ -93,11 +93,25 @@ const labDesk = {
       change: { index: number; key: string; value: number }
     ): Promise<unknown> =>
       ipcRenderer.invoke('lab:setControl', jetsonId, host, serverPort, change),
+    profiles: (jetsonId: string, host: string, serverPort: number): Promise<unknown> =>
+      ipcRenderer.invoke('lab:profiles', jetsonId, host, serverPort),
+    saveProfiles: (
+      jetsonId: string,
+      host: string,
+      serverPort: number,
+      profiles: unknown[]
+    ): Promise<unknown> =>
+      ipcRenderer.invoke('lab:saveProfiles', jetsonId, host, serverPort, profiles),
     runStart: (
       jetsonId: string,
       host: string,
       serverPort: number,
-      request: { preset: string; params: Record<string, unknown>; rigStatus?: string | null }
+      request: {
+        preset: string
+        params: Record<string, unknown>
+        rigStatus?: string | null
+        profileId?: string | null
+      }
     ): Promise<unknown> => ipcRenderer.invoke('lab:runStart', jetsonId, host, serverPort, request),
     run: (jetsonId: string, host: string, serverPort: number, runId: string): Promise<unknown> =>
       ipcRenderer.invoke('lab:run', jetsonId, host, serverPort, runId)

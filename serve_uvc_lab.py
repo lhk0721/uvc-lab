@@ -76,6 +76,7 @@ SNAPSHOT_DIR = ROOT / "tmp" / "uvc"
 # UVC_LAB_HOME exists so tests can point this at a scratch directory.
 STATE_DIR = Path(os.environ.get("UVC_LAB_HOME") or Path.home() / ".uvc-lab")
 RIG_PATH = STATE_DIR / "rig.json"
+PROFILES_PATH = STATE_DIR / "profiles.json"
 VERSION_FILE = STATE_DIR / "VERSION"
 
 
@@ -155,6 +156,9 @@ class RunRequest(BaseModel):
     # Spec §5: a run started past a rig mismatch ("무시하고 진행") records the
     # status it ran under, so no result is left without its configuration.
     rigStatus: str | None = None
+    # Spec 8: a run started from a test profile records which profile it was,
+    # next to the rig status, so a number is never left without its setup.
+    profileId: str | None = None
 
 
 class ControlRequest(BaseModel):
@@ -231,6 +235,47 @@ def api_rig_put(rig: dict):
     # Atomic replace: a crash mid-write can never truncate the existing rig.
     tmp.replace(RIG_PATH)
     return rig
+
+
+@app.get("/api/profiles")
+def api_profiles_get():
+    # An absent file is an empty set, not a state of its own. Unlike the rig
+    # (spec 5's `no-rig`), nothing on the client behaves differently for
+    # "none saved yet", so there is nothing for a 404 to tell it.
+    if not PROFILES_PATH.is_file():
+        return {"profiles": []}
+    try:
+        data = json.loads(PROFILES_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(500, f"profiles.json unreadable: {exc}")
+    # A hand-edited file may be the bare list; accept both, write one shape.
+    return {"profiles": data.get("profiles", []) if isinstance(data, dict) else data}
+
+
+@app.put("/api/profiles")
+def api_profiles_put(payload: dict):
+    # Shallow, like the rig: the schema (spec 8) is the client's. The server
+    # only refuses what would break the run record or the client's own lookup.
+    profiles = payload.get("profiles")
+    if not isinstance(profiles, list):
+        raise HTTPException(422, "profiles (list) is required")
+    ids = [p.get("id") if isinstance(p, dict) else None for p in profiles]
+    if any(not isinstance(i, str) or not i for i in ids):
+        raise HTTPException(422, "every profile needs a non-empty string id")
+    # The id is what a result is filed under, so a duplicate would make two
+    # different setups indistinguishable afterwards.
+    if len(set(ids)) != len(ids):
+        raise HTTPException(422, "profile ids must be unique")
+    for profile in profiles:
+        if not isinstance(profile.get("preset"), str):
+            raise HTTPException(422, f"{profile.get('id')}: preset (str) is required")
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = PROFILES_PATH.with_name(PROFILES_PATH.name + ".tmp")
+    tmp.write_text(json.dumps({"profiles": profiles}, ensure_ascii=False, indent=2) + "\n",
+                   encoding="utf-8")
+    # Atomic replace, same as the rig: a crash mid-write cannot truncate it.
+    tmp.replace(PROFILES_PATH)
+    return {"profiles": profiles}
 
 
 @app.get("/api/modes")
@@ -430,7 +475,8 @@ def api_start_run(request: RunRequest):
         runs[run_id] = {"id": run_id, "preset": request.preset,
                         "title": preset["title"], "status": "running",
                         "started": time.time(), "log": [], "result": None,
-                        "error": None, "rigStatus": request.rigStatus}
+                        "error": None, "rigStatus": request.rigStatus,
+                        "profileId": request.profileId}
 
     params = normalise_params(preset, request.params)
     threading.Thread(target=_execute, args=(run_id, preset, params), daemon=True).start()

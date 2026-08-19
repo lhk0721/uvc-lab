@@ -4,6 +4,7 @@ import { Link, useParams } from '@tanstack/react-router'
 import { useStore } from 'zustand'
 import { labStore } from './store'
 import { LogPanel } from './LogPanel'
+import { ProfilePanel } from './ProfilePanel'
 import { issueMessage, markOf, matchRig, STATUS_LABEL } from './rig'
 import {
   clampControl,
@@ -214,14 +215,19 @@ export function LabScreen() {
       .catch((err: Error) => setControlError(err.message))
   }
 
-  const startRun = (): void => {
-    if (!host || !presetId) return
+  // One entry point for both the bench panel and a test profile (spec 8), so
+  // a run is started the same way whatever picked its parameters.
+  const startRun = (request: {
+    preset: string
+    params: Record<string, unknown>
+    profileId?: string | null
+  }): void => {
+    if (!host || !request.preset) return
     setStartError('')
     seenLogRef.current = 0
     window.labDesk.lab
       .runStart(jetsonId, host, serverPort, {
-        preset: presetId,
-        params,
+        ...request,
         // Spec 5: a run past a mismatch carries the status it ran under.
         rigStatus: runRigStatus(match.status)
       })
@@ -526,13 +532,24 @@ export function LabScreen() {
                   </option>
                 ))}
               </select>
-              <button type="button" onClick={startRun} disabled={!preset || running}>
+              <button
+                type="button"
+                onClick={() => startRun({ preset: presetId, params })}
+                disabled={!preset || running}
+              >
                 {running ? '실행 중…' : '실행'}
               </button>
               {preset?.duration_hint && <span className="dim-note">{preset.duration_hint}</span>}
             </div>
             {preset && <p className="dim-note">{preset.question}</p>}
             {startError && <p className="provision-line failed">{startError}</p>}
+            {run.isError && (
+              // Without this a failed poll looks like a run that produced
+              // nothing, which is the one thing it must not look like.
+              <p className="provision-line failed">
+                실행 상태를 읽지 못했습니다 — {(run.error as Error).message}
+              </p>
+            )}
 
             <div className="bench-params">
               {(preset?.params ?? []).map((spec) => (
@@ -603,6 +620,9 @@ export function LabScreen() {
                   {run.data.rigStatus && (
                     <span className="badge warn">rig: {run.data.rigStatus}</span>
                   )}
+                  {run.data.profileId && (
+                    <span className="badge">프로필: {run.data.profileId}</span>
+                  )}
                 </header>
                 {run.data.error && <p className="provision-line failed">{run.data.error}</p>}
                 {run.data.result && (
@@ -641,6 +661,18 @@ export function LabScreen() {
               </div>
             )}
           </section>
+
+          <ProfilePanel
+            jetsonId={jetsonId}
+            host={host}
+            serverPort={serverPort}
+            devices={devices.data ?? []}
+            rig={rig.data ?? null}
+            presets={presets.data ?? []}
+            modeOptions={modeOptions.data}
+            running={running}
+            onRun={startRun}
+          />
         </>
       )}
 

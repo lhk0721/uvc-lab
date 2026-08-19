@@ -194,12 +194,32 @@ app.whenReady().then(() => {
       value: Number(change?.value)
     })
   )
+  ipcMain.handle('lab:profiles', async (_event, jetsonId, host, port) => {
+    const answer = (await jetsonGet(
+      await jetsonSession(jetsonId, host),
+      Number(port),
+      '/api/profiles'
+    )) as { profiles?: unknown[] }
+    return answer?.profiles ?? []
+  })
+  ipcMain.handle('lab:saveProfiles', async (_event, jetsonId, host, port, profiles) => {
+    if (!Array.isArray(profiles)) throw new Error('profiles must be a list')
+    const answer = (await jetsonPut(
+      await jetsonSession(jetsonId, host),
+      Number(port),
+      '/api/profiles',
+      { profiles }
+    )) as { profiles?: unknown[] }
+    return answer?.profiles ?? []
+  })
   ipcMain.handle('lab:runStart', async (_event, jetsonId, host, port, request) =>
     jetsonPost(await jetsonSession(jetsonId, host), Number(port), '/api/runs', {
       preset: String(request?.preset ?? ''),
       params: request?.params ?? {},
       // Spec section 5: the rig state a run was started under travels with it.
-      rigStatus: request?.rigStatus ?? null
+      rigStatus: request?.rigStatus ?? null,
+      // Spec section 8: so does the profile it came from.
+      profileId: request?.profileId ?? null
     })
   )
   ipcMain.handle('lab:run', async (_event, jetsonId, host, port, runId) => {
