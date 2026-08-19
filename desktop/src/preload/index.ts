@@ -38,7 +38,9 @@ const labDesk = {
       jetsonId: string,
       creds: { user: string; password: string; sudoPassword?: string }
     ): Promise<void> => ipcRenderer.invoke('credentials:set', jetsonId, creds),
-    delete: (jetsonId: string): Promise<void> => ipcRenderer.invoke('credentials:delete', jetsonId)
+    delete: (jetsonId: string): Promise<void> => ipcRenderer.invoke('credentials:delete', jetsonId),
+    setSudo: (jetsonId: string, sudoPassword: string): Promise<void> =>
+      ipcRenderer.invoke('credentials:setSudo', jetsonId, sudoPassword)
   },
 
   provision: {

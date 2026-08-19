@@ -42,7 +42,7 @@ interface ProvisionState {
 interface ProvisionRunOptions {
   host: string
   jetsonId?: string
-  auth?: { user: string; password: string; save: boolean }
+  auth?: { user: string; password: string; sudoPassword?: string; save: boolean }
   forcePush?: boolean
 }
 
@@ -78,6 +78,7 @@ interface Window {
         creds: { user: string; password: string; sudoPassword?: string }
       ): Promise<void>
       delete(jetsonId: string): Promise<void>
+      setSudo(jetsonId: string, sudoPassword: string): Promise<void>
     }
     provision: {
       run(options: ProvisionRunOptions): Promise<ProvisionState>

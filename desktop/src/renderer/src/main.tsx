@@ -9,6 +9,7 @@ import {
   RouterProvider
 } from '@tanstack/react-router'
 import { Home } from './Home'
+import { initBridge } from './bridge'
 import './index.css'
 
 // Hash history: the packaged renderer is loaded from a file:// path, where a
@@ -27,6 +28,9 @@ declare module '@tanstack/react-router' {
 }
 
 const queryClient = new QueryClient()
+
+// IPC push subscriptions are wired once, outside React (StrictMode-safe).
+initBridge()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

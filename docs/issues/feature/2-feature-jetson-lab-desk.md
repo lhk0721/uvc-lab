@@ -235,12 +235,34 @@ target is a no-op, a changed host/port replaces the tunnel, and open/close
 push the full snapshot over `tunnel:changed` (`tunnel:open/close/list` invoke
 channels alongside).
 
+Step 9 is coded: the renderer grows real device cards and the log panel
+(`store.ts`, `bridge.ts`, `DeviceCard.tsx`, `LogPanel.tsx`). A zustand vanilla
+store mirrors the main-pushed state (discovery list, provision state keyed by
+host, tunnel snapshots, log lines capped at 500) plus the card state that must
+outlive a mount (server phase per Jetson id, chosen route per id); bridge.ts
+wires the IPC subscriptions exactly once at module level, outside the React
+lifecycle, so StrictMode double-mounting cannot double-subscribe. The card
+shows the server-state dot, the version from `/api/health` after a start, all
+live routes with the one in use switchable by click, the provision phase/step
+line, and the live tunnel URL with a copy button; its actions are
+install/reinstall (reinstall passes `forcePush`), start (`systemctl start` +
+health check + tunnel open) and stop (tunnel close + `systemctl stop`).
+`needs-auth` renders an inline credential form (save gated on `canPersist`);
+`needs-sudo` renders the sudo-password form plus the manual command. Two small
+main-side additions support that: `ProvisionRunOptions.auth` gained
+`sudoPassword` (joins the linger candidates and is saved alongside when
+`save`), and `credentials:setSudo` merges a sudo password into an existing
+entry so the renderer never re-sends — or holds — the stored SSH password.
+Anything keyed by Jetson id prefers the id provision reported
+(`provision.jetsonId`), so a card acts correctly before discovery
+re-identifies it.
+
 Next step: with the Jetson on — verify step 2 (3 cameras on `usb-0:1.1/1.2/1.4`,
 profiles `trigger-v1`×2 + `webcam-std`), see the box discovered per route, run
-a real provision end-to-end (aarch64 path, real linger/sudo, uv install
-branch), and see real HTTP flow through the tunnel to `serve_uvc_lab.py`;
-meanwhile step 9 (device card + log panel, which gives provisioning and the
-tunnel their UI) can proceed offline.
+a real provision end-to-end from the card (aarch64 path, real linger/sudo, uv
+install branch), and see real HTTP flow through the tunnel to
+`serve_uvc_lab.py`; meanwhile step 10 (rig registration screen + wiring
+diagram, spec sections 4 and 6) can proceed offline.
 
 ## feature: Jetson Lab Desk 설계 문서 (#2)
 
@@ -677,3 +699,52 @@ tunnel their UI) can proceed offline.
   expected (no credentials), `tunnel:close` emptied the list — zero error
   lines beyond that deliberately provoked fetch failure. Pending at the box
   (batched): real HTTP through the tunnel to `serve_uvc_lab.py`, per route.
+
+## feat: renderer 장비 카드 + 로그 패널 (#2)
+
+- What: spec section 11 step 9 — the renderer's device cards and log panel
+  (`store.ts`, `bridge.ts`, `DeviceCard.tsx`, `LogPanel.tsx`, Home rewired),
+  plus two small main-side additions the card needed:
+  `ProvisionRunOptions.auth.sudoPassword` (flows into the linger sudo
+  candidates, saved alongside when `save`) and a `credentials:setSudo` IPC
+  channel that merges a sudo password into an existing entry. A zustand
+  vanilla store mirrors main-pushed state (discovery, provision keyed by
+  host, tunnel snapshots, logs capped at 500) plus per-id server phase and
+  chosen route; bridge.ts subscribes to the IPC pushes exactly once at module
+  level. The card renders the design's list: state dot, health version, all
+  live routes (click to switch the one in use, relay flagged), provision
+  phase/step, live tunnel URL with copy, install/reinstall(forcePush),
+  start (systemctl + health + tunnel open), stop (tunnel close + systemctl).
+  `needs-auth` and `needs-sudo` are inline forms — the sudo one shows the
+  manual command and, when credentials are stored, sends only the sudo
+  password through setSudo so the SSH password never re-enters the renderer.
+- Why: step 9 gives provisioning and the tunnel their UI — until now every
+  main capability existed but nothing could drive it. The two main-side
+  additions exist because the design requires the sudo password to be
+  collectable in-app: without them the renderer had no path to hand a sudo
+  password over without also knowing the stored SSH password, which the
+  design forbids it from ever seeing. Ids prefer `provision.jetsonId` over
+  the card id so actions work in the window between a provision identifying
+  the box and discovery's next identify cycle renaming the card.
+- How verified: success criterion set up front — (1) typecheck + build, (2)
+  logic offline, (3) a DOM-driven dev smoke. `npm run typecheck` and
+  `electron-vite build` pass clean on the committed code. Plain-Node checks
+  (6/6): store logic (provision keyed by host, log cap + clear, tunnel
+  snapshot replace, per-id server/route state, provisionBusy table), the
+  setSudo merge contract (ssh password untouched, target must exist), and a
+  scripted ssh2 Server run proving auth.sudoPassword rides sudo's stdin as
+  the one fallback after the SSH password and is persisted by save. Dev
+  smoke: a mock Jetson (real ssh2 server on 127.0.0.1:22, exec answers,
+  direct-tcpip bridged to a local /api/health HTTP server) plus a temporary
+  driver clicking the real DOM — manual add, install, needs-auth form filled
+  and submitted, ready with server port 18100 shown, 9 bootstrap lines in
+  the log panel, start turning the dot green with tunnel URL
+  `http://127.0.0.1:18101` on the card, a renderer fetch through that tunnel
+  returning the mock's health JSON, stop clearing tunnel and dot — zero
+  error lines; driver removed before commit. The first smoke run exposed a
+  real-world hazard worth recording: discovery listed the actual LAN gateway
+  (192.168.10.1, ssh open) first, the driver clicked that card, and one
+  failed auth attempt went to the real box before the timeout — the driver
+  now selects the mock's card by name. One transient vite dep-optimize
+  reload (new zustand import) produced a one-off React error on first boot
+  only; it does not reproduce with a warm cache and is not committed code.

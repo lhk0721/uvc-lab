@@ -114,6 +114,14 @@ app.whenReady().then(() => {
     })
   })
   ipcMain.handle('credentials:delete', (_event, jetsonId) => store.delete(String(jetsonId)))
+  // needs-sudo recovery: merge a sudo password into an existing entry. The
+  // renderer never holds the stored SSH password, so this cannot be a set().
+  ipcMain.handle('credentials:setSudo', (_event, jetsonId, sudoPassword) => {
+    const id = String(jetsonId)
+    const current = store.get(id)
+    if (!current) throw new Error('no stored credentials to attach a sudo password to')
+    store.set(id, { ...current, sudoPassword: String(sudoPassword) })
+  })
 
   ipcMain.handle('provision:run', (_event, options: ProvisionRunOptions) =>
     provisioner.run(options)

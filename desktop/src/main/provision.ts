@@ -42,7 +42,7 @@ export interface ProvisionRunOptions {
   /** Known Jetson id (identified entries) — resolves stored credentials. */
   jetsonId?: string
   /** First-contact path: explicit credentials, stored on success if `save`. */
-  auth?: { user: string; password: string; save: boolean }
+  auth?: { user: string; password: string; sudoPassword?: string; save: boolean }
   forcePush?: boolean
 }
 
@@ -120,7 +120,11 @@ export class Provisioner {
     push({ jetsonId })
     log(`connected to ${jetsonId} (${host}) as ${creds.user}`)
     if (options.auth?.save) {
-      this.opts.store.set(jetsonId, { user: creds.user, password: creds.password })
+      this.opts.store.set(jetsonId, {
+        user: creds.user,
+        password: creds.password,
+        ...(creds.sudoPassword !== undefined && { sudoPassword: creds.sudoPassword })
+      })
     }
     this.opts.pool.adopt(jetsonId, session)
 

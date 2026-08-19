@@ -1,28 +1,17 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useStore } from 'zustand'
+import { labStore } from './store'
+import { DeviceCard } from './DeviceCard'
+import { LogPanel } from './LogPanel'
 
-const ROUTE_LABEL: Record<RouteKind, string> = {
-  usb: 'USB',
-  mdns: 'mDNS',
-  'lan-scan': 'LAN 스캔',
-  tailscale: 'Tailscale',
-  manual: '수동'
-}
-
-// Placeholder listing until step 9 turns entries into real device cards.
-// Discovery state is main-owned push state: seed with `list`, then follow
-// `discovery:changed`.
+// Discovery state is main-owned push state: bridge.ts seeds and follows
+// `discovery:changed`; this component only renders the store.
 export function Home() {
   const info = useQuery({ queryKey: ['app:info'], queryFn: () => window.labDesk.appInfo() })
-  const [jetsons, setJetsons] = useState<DiscoveredJetson[]>([])
+  const jetsons = useStore(labStore, (s) => s.jetsons)
   const [manualHost, setManualHost] = useState('')
   const [scanning, setScanning] = useState(false)
-
-  useEffect(() => {
-    const unsubscribe = window.labDesk.discovery.onChanged(setJetsons)
-    void window.labDesk.discovery.list().then(setJetsons)
-    return unsubscribe
-  }, [])
 
   const rescan = (): void => {
     setScanning(true)
@@ -46,27 +35,7 @@ export function Home() {
       ) : (
         <ul className="jetson-list">
           {jetsons.map((jetson) => (
-            <li key={jetson.id}>
-              <strong>{jetson.id}</strong>
-              {!jetson.identified && <span className="badge dim">미확인</span>}
-              <ul className="route-list">
-                {jetson.routes.map((route) => (
-                  <li key={`${route.kind}:${route.host}`}>
-                    <span className="badge">{ROUTE_LABEL[route.kind]}</span> {route.host}
-                    {route.name ? ` (${route.name})` : ''}
-                    {route.relayed ? ' · relay 경유' : ''}
-                    {route.kind === 'manual' && (
-                      <button
-                        type="button"
-                        onClick={() => void window.labDesk.discovery.removeManual(route.host)}
-                      >
-                        제거
-                      </button>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </li>
+            <DeviceCard key={jetson.id} jetson={jetson} />
           ))}
         </ul>
       )}
@@ -84,6 +53,8 @@ export function Home() {
           <button type="submit">추가</button>
         </form>
       </div>
+
+      <LogPanel />
 
       <footer>
         {info.data
