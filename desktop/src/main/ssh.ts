@@ -2,6 +2,7 @@ import type { Duplex, Readable } from 'node:stream'
 import { Client } from 'ssh2'
 import type { Identify, Route } from './discovery.ts'
 import type { CredentialStore } from './credentials.ts'
+import { sourceFor } from './link-local.ts'
 
 // SSH session layer, design sections 1-2. Everything the app does on the box
 // (identify, provision, systemctl, tunnel in step 8) goes through SshSession.
@@ -48,7 +49,12 @@ export class SshSession {
     readonly user: string
   ) {}
 
-  static connect(options: SshConnectOptions): Promise<SshSession> {
+  static async connect(options: SshConnectOptions): Promise<SshSession> {
+    const port = options.port ?? 22
+    const timeoutMs = options.timeoutMs ?? 10_000
+    // A link-local box is only reachable from the address on its own link
+    // (see link-local.ts); ssh2 opens its own socket, so it needs the source.
+    const localAddress = await sourceFor(options.host, port, timeoutMs)
     return new Promise((resolve, reject) => {
       const client = new Client()
       let settled = false
@@ -73,11 +79,12 @@ export class SshSession {
       })
       client.connect({
         host: options.host,
-        port: options.port ?? 22,
+        port,
         username: options.user,
         password: options.password,
+        ...(localAddress !== undefined && { localAddress }),
         tryKeyboard: true,
-        readyTimeout: options.timeoutMs ?? 10_000,
+        readyTimeout: timeoutMs,
         keepaliveInterval: 15_000,
         keepaliveCountMax: 3
       })

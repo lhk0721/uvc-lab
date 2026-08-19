@@ -187,15 +187,30 @@ LAN 직결은 별도 코드가 거의 필요 없다. 양쪽 다 DHCP를 못 받�
 **1단계 — 후보 수집.** 네 경로를 병렬로 돌려 `(주소, 경로)` 목록을 만든다.
 
 1. **USB** — `192.168.55.1`의 TCP 22만 확인. 가장 싸고 확실하다.
-2. **mDNS** — `bonjour-service`로 `_ssh._tcp` 조회. Jetson(Ubuntu)은 avahi가
-   기본으로 떠 있어 `<hostname>.local`이 잡힌다.
+2. **mDNS** — `bonjour-service`로 `_ssh._tcp` 조회. **실측에서 이 경로는 동작하지
+   않았다.** 대상 Jetson은 avahi가 떠 있지만 서비스를 하나도 광고하지 않는다
+   (`/etc/avahi/services/`가 비어 있고 `publish-workstation=no`). 광고가 없으면
+   `_ssh._tcp` 조회로는 영원히 안 잡힌다 — avahi가 응답하는 것은 호스트 이름
+   레코드뿐이라 `<hostname>.local`은 이름을 아는 쪽만 물어볼 수 있다. 첫 접속은
+   수동 추가로 하고, 이 경로를 살리려면 프로비저닝이 광고를 심어야 한다(미결).
 3. **Tailscale** — 노트북에 `tailscale` CLI가 있으면 `tailscale status --json`을
    읽는다. peer마다 hostname·IP·online 여부·OS·relay 여부가 다 들어 있어서
    스캔이 아니라 조회로 끝난다. sudo도 필요 없고, CLI가 있다는 것 자체가
    "이 노트북은 tailnet에 붙어 있다"는 판정이 된다. **tailnet 대역
    (100.64.0.0/10)은 절대 스캔하지 않는다** — 범위가 너무 넓다.
-4. **서브넷 스캔** — 위에서 아무것도 안 나왔을 때만. 노트북이 붙은 /24와
-   link-local 대역의 port 22를 훑고 SSH 배너로 Linux 장비를 추린다.
+4. **서브넷 스캔** — 위에서 아무것도 안 나왔을 때만. 노트북이 붙은 /24의 port 22를
+   훑고 SSH 배너로 Linux 장비를 추린다. **link-local 대역은 훑지 않는다.**
+   169.254.0.0/16은 주소가 65,024개라 실측에서 한 바퀴에 **3,020초**가 걸렸고,
+   그 사이 소켓 폭주 때문에 정작 실물 Jetson으로 가는 설치 연결이 3초 timeout으로
+   죽었다. 랜 직결 장비는 스캔이 아니라 수동 추가로 잡는다.
+
+**link-local 주소는 출발지를 묶어서 연결한다.** APIPA 주소를 가진 어댑터는 모두
+169.254.0.0/16 on-link 경로를 만들고, Windows는 그중 metric이 가장 낮은 것을 쓴다.
+로그아웃 상태의 Tailscale 어댑터가 APIPA를 잡으면 metric 5로 이 대역을 통째로
+가져가고(이더넷은 25), 케이블 하나 건너에 있는 Jetson으로 가는 연결이 전부
+timeout이 된다 — 실측으로 재현했다. 그래서 link-local 목적지는 노트북 자신의
+link-local 주소를 후보로 경쟁시켜 붙고, 응답한 출발지를 기억한다
+(`main/link-local.ts`).
 
 **2단계 — 정체 확인과 병합.** 각 후보에 붙어 `hostname`을 받고(설치되어 있으면
 터널 너머 `/api/health`로 한 번에 얻는다), 같은 id끼리 하나의 `Jetson`으로 합친다.

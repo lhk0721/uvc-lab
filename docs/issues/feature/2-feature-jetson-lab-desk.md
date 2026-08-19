@@ -1017,3 +1017,35 @@ step of its own, and it needs the wiring to be confirmed first (section 12).
   Three consecutive runs, zero error lines, driver removed before commit.
   Pending at the box (batched): the gate against the real three cameras, where
   the trigger example must refuse port 4 on its own evidence.
+
+## fix: 링크로컬 경로 접속 — 출발지 주소 경쟁과 대역 전수 스캔 제거 (#2)
+
+- What: added `desktop/src/main/link-local.ts` and routed every link-local
+  connection through it — `tcpProbe`/`readSshBanner` (discovery.ts) now open
+  their socket via `openSocket`, and `SshSession.connect` asks `sourceFor` for
+  the address to bind. `scanTargets` no longer expands the 169.254.0.0/16 band.
+  The design's discovery section was corrected in three places to match.
+- Why: found at the box, on the route the user actually uses. Two separate
+  faults sat on top of each other. (1) Every adapter holding an APIPA address
+  contributes an on-link 169.254.0.0/16 route and Windows takes the lowest
+  interface metric; a Tailscale adapter that is installed but logged out sits
+  there at metric 5 against the ethernet adapter's 25 and swallows the whole
+  band, so the app could not reach a Jetson one cable away. (2) The fallback
+  scan then tried to brute-force that band, and its socket storm was what
+  actually killed the first real provision — the app starved its own connection
+  to the box it was installing to. The mDNS route could not cover for either:
+  the box advertises no services at all, so `_ssh._tcp` finds nothing and only
+  manual add gets a first contact.
+- How verified: measured, not reasoned. Plain `connect()` to the Jetson's
+  169.254.203.230:22 times out while the same connect bound to the ethernet
+  adapter's own link-local address succeeds — reproduced in Node before the
+  fix and again through the app after it, which then read the real SSH banner
+  (`SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.16`) and completed a full provision
+  over that route. The learned source makes the second probe 2ms instead of
+  1.6s, a refused port keeps the learned source instead of re-racing, and a
+  dead link-local address still fails fast (468ms). The band scan was timed
+  before removal: 65,528 targets, 3,020 seconds, nothing found. avahi's silence
+  was confirmed on the box (`/etc/avahi/services/` empty,
+  `publish-workstation=no`) with `avahi-resolve` still answering for the
+  hostname, which is why the design now says the mDNS route needs the box to
+  advertise before it can work.

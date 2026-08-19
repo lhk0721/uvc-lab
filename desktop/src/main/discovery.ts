@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
-import { createConnection } from 'node:net'
 import { networkInterfaces } from 'node:os'
 import { Bonjour, type Browser, type Service } from 'bonjour-service'
+import { isLinkLocal, openSocket } from './link-local.ts'
 
 // Discovery, phase 1 of the design's two-phase model: collect (address, route)
 // candidates over the four real wiring cases (USB direct, mDNS, Tailscale,
@@ -61,32 +61,23 @@ function routeKey(kind: RouteKind, host: string): string {
 }
 
 /** TCP connect probe; true if the port accepted the connection. */
-export function tcpProbe(host: string, port: number, timeoutMs: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const sock = createConnection({ host, port, timeout: timeoutMs })
-    let settled = false
-    const done = (ok: boolean): void => {
-      if (settled) return
-      settled = true
-      sock.destroy()
-      resolve(ok)
-    }
-    sock.once('connect', () => done(true))
-    sock.once('timeout', () => done(false))
-    // `on`, not `once`: a second error (e.g. RST while tearing down) must never
-    // become an unhandled 'error' that takes the whole main process down.
-    sock.on('error', () => done(false))
-  })
+export async function tcpProbe(host: string, port: number, timeoutMs: number): Promise<boolean> {
+  // openSocket owns the link-local source race and swallows every socket
+  // error, so nothing can escape here as an unhandled 'error' either.
+  const sock = await openSocket(host, port, timeoutMs)
+  sock?.destroy()
+  return sock !== null
 }
 
 /** Connect and read the server's identification line; null unless it is SSH. */
-export function readSshBanner(
+export async function readSshBanner(
   host: string,
   port: number,
   timeoutMs: number
 ): Promise<string | null> {
+  const sock = await openSocket(host, port, timeoutMs)
+  if (!sock) return null
   return new Promise((resolve) => {
-    const sock = createConnection({ host, port, timeout: timeoutMs })
     let buf = ''
     let settled = false
     const done = (banner: string | null): void => {
@@ -95,6 +86,11 @@ export function readSshBanner(
       sock.destroy()
       resolve(banner)
     }
+    // openSocket hands back a socket with no timeout left on it, so the read
+    // needs its own deadline: a port that accepts and then says nothing must
+    // not hold a scan lane forever.
+    const timer = setTimeout(() => done(null), timeoutMs)
+    timer.unref()
     // The server speaks first (RFC 4253 section 4.2), so just read.
     sock.on('data', (chunk) => {
       buf += chunk.toString('latin1')
@@ -102,7 +98,7 @@ export function readSshBanner(
       if (line.startsWith('SSH-')) done(line)
       else if (buf.length > 256) done(null)
     })
-    sock.once('timeout', () => done(null))
+    sock.once('close', () => done(null))
     // See tcpProbe: never let a late error escape as unhandled.
     sock.on('error', () => done(null))
   })
@@ -162,30 +158,23 @@ export function parseTailscaleStatus(json: string): Route[] {
 
 /**
  * Enumerate fallback-scan targets from the machine's own interfaces: the /24
- * around each routable IPv4, and the link-local /16 when an interface actually
- * sits in it (without a 169.254.x.x address there is no link into that band).
+ * around each routable IPv4. The link-local band is deliberately NOT swept.
+ * 169.254.0.0/16 is 65024 addresses — measured on the real setup, sweeping it
+ * saturates the machine's sockets for minutes and starved an actual provision
+ * of the box sitting at 169.254.203.230 until it timed out. A direct-cable
+ * Jetson is reached by mDNS or by the manual add instead (design section 1).
  */
 export function scanTargets(
   ifaces: Record<string, { address: string; family: string; internal: boolean }[] | undefined>
 ): string[] {
   const targets = new Set<string>()
   const own = new Set<string>()
-  let linkLocal = false
   for (const addrs of Object.values(ifaces)) {
     for (const a of addrs ?? []) {
-      if (a.internal || a.family !== 'IPv4') continue
+      if (a.internal || a.family !== 'IPv4' || isLinkLocal(a.address)) continue
       own.add(a.address)
-      if (a.address.startsWith('169.254.')) {
-        linkLocal = true
-        continue
-      }
       const prefix = a.address.split('.').slice(0, 3).join('.')
       for (let h = 1; h <= 254; h++) targets.add(`${prefix}.${h}`)
-    }
-  }
-  if (linkLocal) {
-    for (let b = 0; b <= 255; b++) {
-      for (let h = 1; h <= 254; h++) targets.add(`169.254.${b}.${h}`)
     }
   }
   for (const self of own) targets.delete(self)
