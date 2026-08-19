@@ -9,6 +9,7 @@ import {
   RouterProvider
 } from '@tanstack/react-router'
 import { Home } from './Home'
+import { RigScreen } from './RigScreen'
 import { initBridge } from './bridge'
 import './index.css'
 
@@ -16,8 +17,13 @@ import './index.css'
 // path-based history would never match '/'.
 const rootRoute = createRootRoute()
 const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: '/', component: Home })
+const rigRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/rig/$jetsonId',
+  component: RigScreen
+})
 const router = createRouter({
-  routeTree: rootRoute.addChildren([indexRoute]),
+  routeTree: rootRoute.addChildren([indexRoute, rigRoute]),
   history: createHashHistory()
 })
 

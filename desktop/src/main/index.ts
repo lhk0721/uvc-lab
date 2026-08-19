@@ -2,9 +2,10 @@ import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron'
 import { join, resolve } from 'node:path'
 import { Discovery } from './discovery.ts'
 import { CredentialStore, type CredentialCipher } from './credentials.ts'
-import { makeIdentify, SshPool } from './ssh.ts'
+import { makeIdentify, SshPool, type SshSession } from './ssh.ts'
 import { Provisioner, startServer, stopServer, type ProvisionRunOptions } from './provision.ts'
 import { TunnelManager } from './tunnel.ts'
+import { jetsonGet, jetsonPut, JetsonHttpError } from './jetson-http.ts'
 
 // The renderer runs fully locked down; everything OS-facing (SSH, mDNS,
 // filesystem, credentials) stays in this process and crosses only through
@@ -137,6 +138,30 @@ app.whenReady().then(() => {
     if (!session) throw new Error('no SSH session and no stored credentials')
     return stopServer(session)
   })
+
+  // Device/rig channels (spec section 9): main relays HTTP to the Jetson
+  // server over the pooled SSH session — the renderer never learns which
+  // transport carried the request.
+  const jetsonSession = async (jetsonId: unknown, host: unknown): Promise<SshSession> => {
+    const session = await pool.acquire(String(jetsonId), String(host))
+    if (!session) throw new Error('no SSH session and no stored credentials')
+    return session
+  }
+  ipcMain.handle('devices:list', async (_event, jetsonId, host, port) =>
+    jetsonGet(await jetsonSession(jetsonId, host), Number(port), '/api/devices')
+  )
+  ipcMain.handle('rig:get', async (_event, jetsonId, host, port) => {
+    try {
+      return await jetsonGet(await jetsonSession(jetsonId, host), Number(port), '/api/rig')
+    } catch (err) {
+      // 404 is a state, not a failure: the box has no rig yet (spec section 5).
+      if (err instanceof JetsonHttpError && err.status === 404) return null
+      throw err
+    }
+  })
+  ipcMain.handle('rig:save', async (_event, jetsonId, host, port, rig) =>
+    jetsonPut(await jetsonSession(jetsonId, host), Number(port), '/api/rig', rig)
+  )
 
   ipcMain.handle('tunnel:open', (_event, jetsonId, host, remotePort) =>
     tunnels.open(String(jetsonId), String(host), Number(remotePort))

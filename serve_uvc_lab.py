@@ -75,16 +75,20 @@ VERSION_FILE = STATE_DIR / "VERSION"
 
 
 class DeviceBroker:
-    """One consumer per camera at a time, with preview preemptible by runs.
+    """Any number of previews at once, all preemptible by one exclusive user.
 
-    The preview holds the lock for as long as it streams, so a run cannot
-    simply wait for it — it would wait forever. Instead the run signals that
-    it wants the device, and the preview loop checks that flag each frame and
-    bows out.
+    The registration screen streams every camera simultaneously (spec §4), so
+    previews are readers — one per device, running concurrently. A run or an
+    enumeration is the writer: it cannot simply wait for the previews (they
+    hold their slot for as long as they stream), so it signals preemption,
+    each preview loop checks that flag per frame and bows out, and the
+    exclusive section enters once the last preview has left.
     """
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._cond = threading.Condition()
+        self._previews = 0
+        self._exclusive = False
         self._preempt = threading.Event()
 
     @property
@@ -93,37 +97,49 @@ class DeviceBroker:
 
     @contextlib.contextmanager
     def exclusive(self, timeout: float = 30.0):
+        deadline = time.monotonic() + timeout
         self._preempt.set()
-        acquired = self._lock.acquire(timeout=timeout)
-        if not acquired:
-            self._preempt.clear()
-            raise RuntimeError("camera is busy — another run is still holding it")
+        with self._cond:
+            while self._previews > 0 or self._exclusive:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not self._cond.wait(timeout=remaining):
+                    self._preempt.clear()
+                    # Waiters block on the flag we just cleared — wake them so
+                    # they re-check instead of sitting out their own timeout.
+                    self._cond.notify_all()
+                    raise RuntimeError("camera is busy — another run is still holding it")
+            self._exclusive = True
+        self._preempt.clear()
         try:
-            self._preempt.clear()
             yield
         finally:
-            self._lock.release()
+            with self._cond:
+                self._exclusive = False
+                self._cond.notify_all()
 
     @contextlib.contextmanager
     def preview(self, timeout: float = 10.0):
         # Do not race a pending preemption: a run that just asked for the
         # device must not lose it to a preview reconnecting at the same moment.
         deadline = time.monotonic() + timeout
-        while self._preempt.is_set() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        acquired = self._lock.acquire(timeout=max(0.1, deadline - time.monotonic()))
-        if not acquired:
-            raise RuntimeError("camera is busy")
+        with self._cond:
+            while self._exclusive or self._preempt.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not self._cond.wait(timeout=remaining):
+                    raise RuntimeError("camera is busy")
+            self._previews += 1
         try:
             yield
         finally:
-            self._lock.release()
+            with self._cond:
+                self._previews -= 1
+                self._cond.notify_all()
 
 
 broker = DeviceBroker()
 runs: dict[str, dict[str, Any]] = {}
 runs_lock = threading.Lock()
-stream_stats: dict[str, Any] = {"active": False}
+stream_stats: dict[int, dict[str, Any]] = {}  # one entry per streaming index
 
 app = FastAPI(title="UVC Camera Lab")
 
@@ -164,7 +180,7 @@ def api_devices(max_index: int = 5):
     # opened=False means the node exists but another process holds it — the
     # client must render that as "busy", not as an absent camera (spec §2.3).
     return [
-        {"index": d.index, "camId": d.cam_id, "opened": d.opened,
+        {"index": d.index, "camId": d.cam_id, "idPath": d.id_path, "opened": d.opened,
          "width": d.width, "height": d.height,
          "signature": d.signature, "os_name": d.os_name,
          "os_name_is_heuristic": d.os_name_is_heuristic,
@@ -209,18 +225,24 @@ def api_presets():
 
 
 @app.get("/api/stream/stats")
-def api_stream_stats():
-    return stream_stats
+def api_stream_stats(index: int | None = None):
+    # Stats are per index now that previews run concurrently. Without an
+    # index (the single-preview page), answer with any active stream so the
+    # old flat shape keeps working.
+    if index is not None:
+        return stream_stats.get(index, {"active": False})
+    return next((s for s in stream_stats.values() if s.get("active")), {"active": False})
 
 
 def _mjpeg(index: int, width: int, height: int, fourcc: str, quality: int):
     """Multipart JPEG stream — an <img> tag renders it with no client code."""
     boundary = b"--frame\r\n"
+    stats = stream_stats.setdefault(index, {})
     try:
         with broker.preview():
             cap = open_capture(index, width, height, fourcc, None)
-            stream_stats.update({"active": True, "index": index, "fps": 0.0,
-                                 "signal": None, "error": None})
+            stats.update({"active": True, "index": index, "fps": 0.0,
+                          "signal": None, "error": None})
             # The first frames after open are null buffers (frame 0 is
             # reliably all-zero); sampling them would report a healthy camera
             # as dead in the UI.
@@ -236,7 +258,7 @@ def _mjpeg(index: int, width: int, height: int, fourcc: str, quality: int):
                 while not broker.should_yield:
                     ok, frame = cap.read()
                     if not ok:
-                        stream_stats["error"] = "frame grab failed"
+                        stats["error"] = "frame grab failed"
                         break
 
                     now = time.perf_counter()
@@ -244,11 +266,11 @@ def _mjpeg(index: int, width: int, height: int, fourcc: str, quality: int):
                     if len(window) > 1:
                         span = window[-1] - window[0]
                         if span > 0:
-                            stream_stats["fps"] = round((len(window) - 1) / span, 1)
+                            stats["fps"] = round((len(window) - 1) / span, 1)
                     # Signal analysis is not free at 2.3MP, so sample it rather
                     # than paying for it on every frame of the preview.
                     if now - checked_at > 1.0:
-                        stream_stats["signal"] = frame_signal(frame)
+                        stats["signal"] = frame_signal(frame)
                         checked_at = now
 
                     encoded, buf = cv2.imencode(
@@ -258,12 +280,12 @@ def _mjpeg(index: int, width: int, height: int, fourcc: str, quality: int):
                     yield boundary + b"Content-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n"
             finally:
                 cap.release()
-                stream_stats.update({"active": False, "fps": 0.0})
+                stats.update({"active": False, "fps": 0.0})
     except (RuntimeError, GeneratorExit):
-        stream_stats.update({"active": False})
+        stats.update({"active": False})
         return
     except Exception as exc:  # surfaced in the UI rather than dying silently
-        stream_stats.update({"active": False, "error": str(exc)})
+        stats.update({"active": False, "error": str(exc)})
         return
 
 

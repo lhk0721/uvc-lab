@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { useStore } from 'zustand'
 import { labStore, provisionBusy, type ServerPhase } from './store'
 
@@ -288,6 +289,9 @@ export function DeviceCard({ jetson }: { jetson: DiscoveredJetson }) {
         <button type="button" disabled={busy} onClick={stop}>
           정지
         </button>
+        <Link className="button-link" to="/rig/$jetsonId" params={{ jetsonId: effectiveId }}>
+          구성
+        </Link>
       </div>
     </li>
   )

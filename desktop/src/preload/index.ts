@@ -57,6 +57,20 @@ const labDesk = {
       ipcRenderer.invoke('server:stop', jetsonId, host)
   },
 
+  // Device/rig payloads pass through main untouched (JSON from the Jetson
+  // server); their shapes are owned by the renderer-side mirror in env.d.ts.
+  devices: {
+    list: (jetsonId: string, host: string, serverPort: number): Promise<unknown> =>
+      ipcRenderer.invoke('devices:list', jetsonId, host, serverPort)
+  },
+
+  rig: {
+    get: (jetsonId: string, host: string, serverPort: number): Promise<unknown> =>
+      ipcRenderer.invoke('rig:get', jetsonId, host, serverPort),
+    save: (jetsonId: string, host: string, serverPort: number, rig: unknown): Promise<unknown> =>
+      ipcRenderer.invoke('rig:save', jetsonId, host, serverPort, rig)
+  },
+
   tunnel: {
     open: (jetsonId: string, host: string, remotePort: number): Promise<TunnelInfo> =>
       ipcRenderer.invoke('tunnel:open', jetsonId, host, remotePort),

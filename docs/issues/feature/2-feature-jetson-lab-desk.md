@@ -257,12 +257,43 @@ Anything keyed by Jetson id prefers the id provision reported
 (`provision.jetsonId`), so a card acts correctly before discovery
 re-identifies it.
 
+Step 10 is coded: the rig registration screen and the wiring diagram
+(`rig.ts`, `RigScreen.tsx`), the main-side relay they need
+(`jetson-http.ts` plus the `devices:list` / `rig:get` / `rig:save` channels),
+and three matching changes on the Jetson server. `jetson-http.ts` runs `curl`
+against the box's own loopback over the pooled SSH session, so device and rig
+requests need no open tunnel and no port on the Jetson's network; `rig:get`
+maps 404 to null because "no rig yet" is a state, not a failure. `rig.ts`
+holds the logic and no React: the section 5 match (all seven states, with
+hub-moved proposed only when every bound port shifts by the same prefix and
+the per-port control profiles still agree), the section 6.4 wiring rules (GND
+follows the other signals and is never hand-toggled; TRG needs both a trigger
+source pin and a control profile that is not known to lack the firmware), and
+the diagram's port arithmetic (gaps between numeric ports are drawn as empty
+slots). `RigScreen.tsx` renders that as the design's fixed layout - no drag &
+drop: the Jetson node with its two editable GPIO pins, one row per port with
+label, detected descriptor, control profile, signal checkboxes and the
+declared-but-unverified dashed line, unbound cameras planned ahead (auto-bound
+only when exactly one camera and exactly one free port make it unambiguous),
+the 1.8V warning raised once on the first TRG/STRB check, and MJPEG previews
+of every open camera through the tunnel so the registration screen itself is
+the first place a mismatched camera shows up. Saving writes the whole rig to
+the box. Server side: `DeviceBroker` was rewritten from one-consumer-at-a-time
+to readers/writer - any number of previews run concurrently (the registration
+screen needs all cameras at once) and are still preempted by one exclusive
+user, which enters once the last preview has bowed out; `stream_stats` is
+per index with the old flat shape kept for the single-preview page; and
+`/api/devices` now also returns `idPath` so the client can derive
+`rig.host.usbRoot`.
+
 Next step: with the Jetson on — verify step 2 (3 cameras on `usb-0:1.1/1.2/1.4`,
 profiles `trigger-v1`×2 + `webcam-std`), see the box discovered per route, run
 a real provision end-to-end from the card (aarch64 path, real linger/sudo, uv
-install branch), and see real HTTP flow through the tunnel to
-`serve_uvc_lab.py`; meanwhile step 10 (rig registration screen + wiring
-diagram, spec sections 4 and 6) can proceed offline.
+install branch), see real HTTP flow through the tunnel to `serve_uvc_lab.py`,
+and register the real rig from the screen (three simultaneous previews, port
+identity, the section 5 match against the saved rig); meanwhile step 11 (lab
+screen — preview, mode, parameters, benchmark, spec section 7) can proceed
+offline.
 
 ## feature: Jetson Lab Desk 설계 문서 (#2)
 
@@ -748,3 +779,62 @@ diagram, spec sections 4 and 6) can proceed offline.
   now selects the mock's card by name. One transient vite dep-optimize
   reload (new zustand import) produced a one-off React error on first boot
   only; it does not reproduce with a warm cache and is not committed code.
+
+## feat: rig 등록 화면 + 배선 다이어그램 (#2)
+
+- What: spec section 11 step 10 - `desktop/src/renderer/src/rig.ts` and
+  `RigScreen.tsx` (the registration screen and the wiring diagram),
+  `desktop/src/main/jetson-http.ts` with the `devices:list` / `rig:get` /
+  `rig:save` channels behind it, a `구성` link on the device card and a
+  `/rig/$jetsonId` route, plus three server-side changes in
+  `serve_uvc_lab.py`: `DeviceBroker` becomes readers/writer so previews run
+  concurrently while still yielding to one exclusive user, `stream_stats`
+  becomes per index (the no-index call keeps answering the old flat shape for
+  `uvc_lab.html`), and `/api/devices` returns `idPath`. Main relays HTTP to
+  the box as `curl` over the pooled SSH session, so nothing here depends on an
+  open tunnel and no port is opened on the Jetson's network; `rig:get` turns
+  the server's 404 into null because section 5's `no-rig` is a state, not an
+  error. `rig.ts` is React-free: the seven-state match, the hub-moved proposal
+  (only when every bound port shifts by the same prefix and the per-port
+  control profiles still agree), the section 6.4 signal rules, and the port
+  slots the diagram draws - empty ports included.
+- Why: this is the step the whole spec exists for - a rig is what lets the app
+  call two cameras an error instead of a fact. Three decisions are worth
+  recording. The registration screen previews every camera at once (section 4),
+  which the old broker made impossible: it held one lock for the whole stream,
+  so the second preview would have waited out its timeout and reported a busy
+  camera. Unbound cameras auto-bind only when exactly one camera and exactly
+  one free port make the answer unambiguous, because section 1.1 leaves the app
+  no basis to decide between two identical cameras - anything else asks. And
+  TRG is gated on both the trigger source pin and the control profile, so the
+  screen refuses the declaration that section 1.5 proved impossible (P4 has no
+  trigger firmware) before any wiring work is done, not after.
+- How verified: success criterion set up front - (1) typecheck + build, (2)
+  logic offline, (3) a DOM-driven dev smoke. `npm run typecheck` and
+  `electron-vite build` pass clean on the committed code. Python checks 5/5
+  against the rewritten broker: two previews genuinely overlap, an exclusive
+  user enters only after they drain and sees the preempt flag cleared, a
+  preview during an exclusive section fails as busy rather than hanging, and
+  the stats API answers per index / missing / no-index-flat. Plain-Node checks
+  15/15: every one of the seven match states including hub-moved accepted and
+  the same shift refused when one port's profile disagrees, GND following the
+  other signals, the TRG gate (no pin / webcam-std / unknown profile), the port
+  slots with the gap at P3, `markOf`/`usbRootOf`/`bindCandidates` against the
+  measured Jetson strings, and `jetson-http` over a scripted ssh2 server -
+  status parsed off the last line, 404 surfaced as `JetsonHttpError`, a Korean
+  rig PUT arriving byte-identically on stdin, and a non-zero `curl` exit
+  reported as a plain error. Dev smoke through the real DOM against the mock
+  Jetson (ssh2 server on 127.0.0.1:22 answering the curl device/rig commands
+  and serving a still JPEG through the direct-tcpip bridge): install -> start
+  -> `구성` -> `no-rig` -> ports drawn P1 P2 P3(비어 있음) P4 -> import +
+  labels -> P1 TRG check turning GND on and locking it -> the 1.8V warning ->
+  P4's TRG disabled with its reason -> save (the mock logged
+  `cameras=3 wiring=usb-0:1.1:TRG+GND trigger=BOARD7 usbRoot=platform-3610000.usb`)
+  -> re-detect showing `구성 일치` -> the preview image decoding through
+  the tunnel; zero error lines, driver removed before commit. The smoke also
+  caught a real bug: the card links by the id provision reported while the
+  screen looked the Jetson up in the discovery list, so the screen said "not in
+  this list" until discovery's next identify cycle - it now falls back to the
+  host of the provision that reported that id. Pending at the box (batched):
+  the real three-camera registration, real previews, and the match against a
+  rig saved on the Jetson itself.
