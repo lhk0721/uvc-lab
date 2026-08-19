@@ -4,6 +4,7 @@ import { Discovery } from './discovery.ts'
 import { CredentialStore, type CredentialCipher } from './credentials.ts'
 import { makeIdentify, SshPool } from './ssh.ts'
 import { Provisioner, startServer, stopServer, type ProvisionRunOptions } from './provision.ts'
+import { TunnelManager } from './tunnel.ts'
 
 // The renderer runs fully locked down; everything OS-facing (SSH, mDNS,
 // filesystem, credentials) stays in this process and crosses only through
@@ -83,6 +84,13 @@ app.whenReady().then(() => {
     onLog: (host, line) => broadcast('log:line', { host, line })
   })
 
+  // The tunnel entrance binds laptop loopback only; the renderer (and the
+  // browser fallback) learns the live URL over IPC.
+  const tunnels = new TunnelManager({
+    pool,
+    onChange: (list) => broadcast('tunnel:changed', list)
+  })
+
   ipcMain.handle('app:info', () => ({
     version: app.getVersion(),
     electron: process.versions.electron,
@@ -122,6 +130,12 @@ app.whenReady().then(() => {
     return stopServer(session)
   })
 
+  ipcMain.handle('tunnel:open', (_event, jetsonId, host, remotePort) =>
+    tunnels.open(String(jetsonId), String(host), Number(remotePort))
+  )
+  ipcMain.handle('tunnel:close', (_event, jetsonId) => tunnels.close(String(jetsonId)))
+  ipcMain.handle('tunnel:list', () => tunnels.list())
+
   discovery.start()
 
   createWindow()
@@ -132,6 +146,7 @@ app.whenReady().then(() => {
 
   app.on('will-quit', () => {
     discovery.stop()
+    void tunnels.closeAll()
     pool.closeAll()
   })
 })

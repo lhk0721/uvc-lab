@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { DiscoveredJetson } from '../main/discovery.ts'
 import type { ProvisionRunOptions, ProvisionState, ServerHealth } from '../main/provision.ts'
+import type { TunnelInfo } from '../main/tunnel.ts'
 
 // The renderer sees exactly this object and nothing else. Device/rig channels
 // (spec section 9) are added here as their main modules land; the
@@ -52,6 +53,15 @@ const labDesk = {
       ipcRenderer.invoke('server:start', jetsonId, host, port),
     stop: (jetsonId: string, host: string): Promise<void> =>
       ipcRenderer.invoke('server:stop', jetsonId, host)
+  },
+
+  tunnel: {
+    open: (jetsonId: string, host: string, remotePort: number): Promise<TunnelInfo> =>
+      ipcRenderer.invoke('tunnel:open', jetsonId, host, remotePort),
+    close: (jetsonId: string): Promise<void> => ipcRenderer.invoke('tunnel:close', jetsonId),
+    list: (): Promise<TunnelInfo[]> => ipcRenderer.invoke('tunnel:list'),
+    onChanged: (callback: (tunnels: TunnelInfo[]) => void): (() => void) =>
+      subscribe('tunnel:changed', callback)
   },
 
   onLogLine: (callback: (entry: { host: string; line: string }) => void): (() => void) =>

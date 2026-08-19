@@ -52,6 +52,14 @@ interface ServerHealth {
   hostname?: string
 }
 
+interface TunnelInfo {
+  jetsonId: string
+  host: string
+  localPort: number
+  remotePort: number
+  url: string
+}
+
 interface Window {
   labDesk: {
     appInfo(): Promise<{ version: string; electron: string; node: string }>
@@ -78,6 +86,12 @@ interface Window {
     server: {
       start(jetsonId: string, host: string, port: number): Promise<ServerHealth>
       stop(jetsonId: string, host: string): Promise<void>
+    }
+    tunnel: {
+      open(jetsonId: string, host: string, remotePort: number): Promise<TunnelInfo>
+      close(jetsonId: string): Promise<void>
+      list(): Promise<TunnelInfo[]>
+      onChanged(callback: (tunnels: TunnelInfo[]) => void): () => void
     }
     onLogLine(callback: (entry: { host: string; line: string }) => void): () => void
   }

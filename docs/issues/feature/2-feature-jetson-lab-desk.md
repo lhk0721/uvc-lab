@@ -221,11 +221,26 @@ log lines over `log:line`. Main-side relative imports now carry `.ts`
 extensions (`allowImportingTsExtensions`) so the electron-free modules load
 under plain Node; tests run with `node --experimental-transform-types`.
 
+Step 8 is coded: `src/main/tunnel.ts` plus an `SshSession.forward` wrapper
+around ssh2 `forwardOut`. Each Jetson gets one local TCP entrance bound to
+laptop loopback — predictable ports first (18101-18109, walking past
+EADDRINUSE/EACCES), then an OS-assigned port, so the browser fallback URL
+stays guessable and the renderer receives the real value over IPC either way.
+Every incoming connection is piped through the pooled SSH session into the
+box's own loopback at the provisioned `serverPort`; the session is looked up
+per connection via `SshPool.acquire`, so a dropped SSH session reconnects
+from stored credentials on the next request instead of leaving a dead tunnel,
+and no-session-no-credentials just drops that connection. Reopening the same
+target is a no-op, a changed host/port replaces the tunnel, and open/close
+push the full snapshot over `tunnel:changed` (`tunnel:open/close/list` invoke
+channels alongside).
+
 Next step: with the Jetson on — verify step 2 (3 cameras on `usb-0:1.1/1.2/1.4`,
-profiles `trigger-v1`×2 + `webcam-std`), see the box discovered per route, and
-run a real provision end-to-end (aarch64 path, real linger/sudo, uv install
-branch); meanwhile step 8 (`tunnel.ts`) and step 9 (device card + log panel,
-which gives provisioning its UI) can proceed offline.
+profiles `trigger-v1`×2 + `webcam-std`), see the box discovered per route, run
+a real provision end-to-end (aarch64 path, real linger/sudo, uv install
+branch), and see real HTTP flow through the tunnel to `serve_uvc_lab.py`;
+meanwhile step 9 (device card + log panel, which gives provisioning and the
+tunnel their UI) can proceed offline.
 
 ## feature: Jetson Lab Desk 설계 문서 (#2)
 
@@ -618,3 +633,47 @@ which gives provisioning its UI) can proceed offline.
   empty entries. Pending at the box (batched): a real end-to-end provision —
   aarch64 bootstrap path, real sudo/linger, uv install branch — and
   `identify` merging the real routes.
+
+## feat: main SSH 터널 — 로컬 포워드 입구 (#2)
+
+- What: spec §11 step 8 — `desktop/src/main/tunnel.ts` plus its wiring, and
+  an `SshSession.forward` wrapper around ssh2 `forwardOut`. `TunnelManager`
+  keeps one tunnel per Jetson id: a TCP server bound to laptop loopback whose
+  every connection is piped through the pooled SSH session into the Jetson's
+  own loopback at the provisioned `serverPort`. Local ports follow the
+  design's laptop-side rule — 18101-18109 in order (EADDRINUSE/EACCES walk),
+  then bind port 0 so the OS picks — and the live URL travels to the renderer
+  either way (`tunnel:open/close/list` invoke channels, `tunnel:changed`
+  snapshot push; preload/env.d.ts mirror the surface). The SSH session is
+  looked up per incoming connection through `SshPool.acquire`, so a dropped
+  session reconnects from stored credentials on the next request; with no
+  session and no credentials the connection is dropped and the renderer's
+  fetch fails visibly. Reopening the same target is a no-op; a changed host
+  or server port replaces the tunnel.
+- Why: design section 3 — the renderer always talks to
+  `http://127.0.0.1:<localPort>` whichever route (USB/mDNS/LAN/Tailscale) is
+  live, and the Jetson opens no port on its network. Per-connection session
+  lookup is what makes the design's "reconnection is the app's job" hold
+  without a reconnect loop: the entrance stays up, and the first request
+  after an SSH drop either heals the tunnel or fails where the card can show
+  it.
+- How verified: success criterion set up front — (1) typecheck + build, (2)
+  the relay offline against a real SSH protocol peer, (3) dev-run IPC
+  roundtrip. `npm run typecheck` and `electron-vite build` pass clean on the
+  committed code. A plain-Node script (`node --experimental-transform-types`)
+  drives a scripted ssh2 `Server` whose `tcpip` handler bridges into a local
+  echo server, and passed 9/9: bytes round-trip through the real direct-tcpip
+  channel with the destination asserted as `127.0.0.1:<serverPort>`; a second
+  device takes 18102; a busy band port is walked past; the exhausted band
+  falls back to an OS-assigned port that still round-trips; reopening the
+  same target pushes no change; a changed server port replaces the tunnel and
+  forwards to the new destination; a dropped SSH session reconnects
+  transparently from stored credentials (a fresh login observed on the mock);
+  no credentials drops the connection without crashing; close refuses the
+  entrance afterwards and `closeAll` empties the list. Dev smoke with
+  temporary console lines: window loaded, `tunnel:list` [], `tunnel:open`
+  ('smoke-box', 127.0.0.1, 19999) returned the 18101 entrance with its URL
+  and pushed `tunnel:changed`, a renderer `fetch` against it failed as
+  expected (no credentials), `tunnel:close` emptied the list — zero error
+  lines beyond that deliberately provoked fetch failure. Pending at the box
+  (batched): real HTTP through the tunnel to `serve_uvc_lab.py`, per route.

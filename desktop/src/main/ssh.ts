@@ -1,4 +1,4 @@
-import type { Readable } from 'node:stream'
+import type { Duplex, Readable } from 'node:stream'
 import { Client } from 'ssh2'
 import type { Identify, Route } from './discovery.ts'
 import type { CredentialStore } from './credentials.ts'
@@ -138,6 +138,20 @@ export class SshSession {
     const result = await this.exec('hostname')
     const name = result.stdout.trim()
     return result.code === 0 && name ? name : null
+  }
+
+  /**
+   * One forwarded TCP connection (design section 3): the returned channel is
+   * wired to dstHost:dstPort on the box's side of the session. The src
+   * values are informational, for sshd's logs.
+   */
+  forward(srcHost: string, srcPort: number, dstHost: string, dstPort: number): Promise<Duplex> {
+    return new Promise((resolve, reject) => {
+      this.client.forwardOut(srcHost, srcPort, dstHost, dstPort, (err, stream) => {
+        if (err) reject(err)
+        else resolve(stream)
+      })
+    })
   }
 
   onClose(callback: () => void): void {
