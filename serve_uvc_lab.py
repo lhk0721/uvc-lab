@@ -40,7 +40,7 @@ from typing import Any
 
 import cv2
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -101,6 +101,11 @@ class DeviceBroker:
     def should_yield(self) -> bool:
         return self._preempt.is_set()
 
+    @property
+    def previews_live(self) -> bool:
+        with self._cond:
+            return self._previews > 0
+
     @contextlib.contextmanager
     def exclusive(self, timeout: float = 30.0):
         deadline = time.monotonic() + timeout
@@ -146,6 +151,8 @@ broker = DeviceBroker()
 runs: dict[str, dict[str, Any]] = {}
 runs_lock = threading.Lock()
 stream_stats: dict[int, dict[str, Any]] = {}  # one entry per streaming index
+# Last successful device enumeration — see api_devices for why it exists.
+_devices_cache: list[dict[str, Any]] | None = None
 
 app = FastAPI(title="UVC Camera Lab")
 
@@ -187,24 +194,44 @@ def api_health():
 
 
 @app.get("/api/devices")
-def api_devices(max_index: int = 5):
+def api_devices(response: Response, max_index: int = 5, refresh: bool = False):
+    # Enumeration opens every camera, so it needs the devices to itself — and
+    # measured on the Jetson it costs ~18s for three cameras. Preempting live
+    # previews for that is wrong twice over: the inventory of a box does not
+    # change while someone watches it, and the previews die for nothing. So
+    # a routine call reuses the last inventory whenever previews are up, and
+    # only an explicit refresh (the "다시 감지" button) takes the cameras.
+    # X-Devices-Cached says which of the two happened, so a stale answer is
+    # never passed off as a fresh probe.
+    global _devices_cache
+    if _devices_cache is not None and not refresh and broker.previews_live:
+        response.headers["X-Devices-Cached"] = "1"
+        return _devices_cache
     try:
         with broker.exclusive(timeout=20):
             devices = list_devices(max_index=max_index)
     except RuntimeError as exc:
+        # Busy is not the same as broken: the last inventory is still the best
+        # answer available, and the header marks it as such.
+        if _devices_cache is not None:
+            response.headers["X-Devices-Cached"] = "1"
+            return _devices_cache
         raise HTTPException(409, str(exc))
     # camId / controlProfile / usb are None on the index-scan fallback
     # (Windows dev machine); on the Jetson they come from by-path enumeration.
     # opened=False means the node exists but another process holds it — the
     # client must render that as "busy", not as an absent camera (spec §2.3).
-    return [
+    payload = [
         {"index": d.index, "camId": d.cam_id, "idPath": d.id_path, "opened": d.opened,
          "width": d.width, "height": d.height,
          "signature": d.signature, "os_name": d.os_name,
          "os_name_is_heuristic": d.os_name_is_heuristic,
-         "controlProfile": d.control_profile, "usb": d.usb}
+         "controlProfile": d.control_profile, "usb": d.usb,
+         "probeError": d.probe_error}
         for d in devices
     ]
+    _devices_cache = payload
+    return payload
 
 
 @app.get("/api/rig")
@@ -400,8 +427,14 @@ def _mjpeg(index: int, width: int, height: int, fourcc: str, quality: int,
             finally:
                 cap.release()
                 stats.update({"active": False, "fps": 0.0})
-    except (RuntimeError, GeneratorExit):
+    except GeneratorExit:
+        # The client went away — a normal end, nothing to report.
         stats.update({"active": False})
+    except RuntimeError as exc:
+        # open_capture refusing the device is the answer the UI needs; losing
+        # it left a preview tile blank with nothing to explain it. Measured on
+        # a camera that enumerates but never streams (P1, 2026-08-19).
+        stats.update({"active": False, "error": str(exc)})
         return
     except Exception as exc:  # surfaced in the UI rather than dying silently
         stats.update({"active": False, "error": str(exc)})

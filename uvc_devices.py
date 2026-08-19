@@ -41,6 +41,7 @@ import statistics
 import struct
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
@@ -284,6 +285,11 @@ class DeviceInfo:
     id_path: str | None = None
     control_profile: str | None = None
     usb: dict | None = None
+    # Why the probe gave up, when it did: "busy" (someone else holds it) or
+    # "timeout" (the node exists but the device never answered). Measured on
+    # the Jetson: a camera that fails USB enumeration leaves a node behind
+    # that blocks in open/read forever.
+    probe_error: str | None = None
 
     def describe(self) -> str:
         name = self.os_name or "(name unavailable)"
@@ -738,14 +744,42 @@ def list_devices(max_index: int = 5, api: int | None = None, with_modes: bool = 
     return _list_devices_index_scan(max_index, api, with_modes)
 
 
+# A camera whose USB link is failing leaves its /dev/video node in place and
+# then never answers: open() and the first read() both block with no timeout
+# of their own. Measured on the box, that wedged the whole server — the
+# enumeration held the device broker's exclusive lock forever and every later
+# request answered "camera is busy". Enumeration is bounded instead: the probe
+# runs on its own thread and a device that misses the deadline is reported as
+# unopened with probe_error="timeout". The abandoned thread is left to the
+# kernel; a leaked thread is a smaller price than a server that never answers.
+PROBE_TIMEOUT_S = 8.0
+
+
 def _probe_open(info: DeviceInfo, api: int, with_modes: bool) -> None:
     """Fill width/height/fourcc/signature by actually opening the device.
-    Leaves ``info.opened`` False when the open or first read fails."""
+
+    Leaves ``info.opened`` False when the open or first read fails, times out,
+    or the device is held by someone else.
+    """
+    worker = threading.Thread(
+        target=_probe_open_blocking, args=(info, api, with_modes), daemon=True
+    )
+    worker.start()
+    worker.join(PROBE_TIMEOUT_S)
+    if worker.is_alive():
+        info.opened = False
+        info.probe_error = "timeout"
+
+
+def _probe_open_blocking(info: DeviceInfo, api: int, with_modes: bool) -> None:
     cap = cv2.VideoCapture(info.index, api)
     if not cap.isOpened():
         cap.release()
+        info.probe_error = "busy"
         return
     ok, _ = cap.read()
+    if not ok:
+        info.probe_error = "no frame"
     if ok:
         info.opened = True
         info.width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))

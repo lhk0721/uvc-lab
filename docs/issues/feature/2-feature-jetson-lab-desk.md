@@ -1072,3 +1072,38 @@ step of its own, and it needs the wiring to be confirmed first (section 12).
   `timestamp_type` explicitly, so this is stock Ubuntu behaviour, not a local
   policy. After the fix the app's install reached `ready` with `serverPort
   18100`, and the box reports `Linger=yes`.
+
+## fix: 장치 열거가 프리뷰를 죽이지 않게 + 응답 없는 카메라 보고 (#2)
+
+- What: three changes that hang together. (1) `/api/devices` keeps the last
+  inventory and serves it while previews are live, taking the cameras only for
+  an explicit `?refresh=1`, and says which happened with `X-Devices-Cached`;
+  the renderer passes that flag from 다시 감지 alone, and its QueryClient stops
+  refetching on window focus. (2) `_probe_open` runs on its own thread with an
+  8s deadline (`PROBE_TIMEOUT_S`) and records why it gave up in a new
+  `probe_error` field, surfaced as `probeError` through `/api/devices` and
+  rendered as "응답 없음" (vs "사용 중") in the profile panel and the browser
+  page. (3) A preview tile that never decodes a frame says so instead of
+  sitting blank, a stream that dies of a RuntimeError keeps its message in the
+  stream stats, and the rig screen tells a 409 (cameras held) apart from an
+  unreachable server.
+- Why: all three came out of the same afternoon at the box. Enumeration opens
+  every camera and costs ~18s for three of them, so preempting previews for a
+  routine refetch killed the previews and eventually answered 409 — and the
+  refetch was triggered by nothing more than the window regaining focus. Then a
+  camera whose USB link was failing left its node in place and blocked in
+  open/read forever, which held the broker's exclusive lock and wedged the
+  whole server: every request answered "camera is busy" until the unit was
+  restarted. The same camera later enumerated, opened, and sent nothing, which
+  an `<img>` shows as a blank rectangle with no error at all.
+- How verified: on the real box. Before the cache change, `/api/devices` during
+  a single preview took 18s and 409'd with three; after it, the same call
+  answers in 5ms while previews keep running, and `?refresh=1` still re-probes.
+  The probe deadline was checked against the actually-broken camera:
+  enumeration returns in 16s with that device marked `probeError: "timeout"`
+  instead of never returning. The stall message appeared on the real tile of a
+  camera that was streaming nothing, and — after the tile was changed to keep
+  looking rather than judge once — cleared itself on a slow camera that took
+  longer than the deadline and then streamed fine. One limit is recorded rather
+  than fixed: a blocking V4L2 read cannot be cancelled, so a camera that dies
+  mid-stream holds its capture until the server is restarted.

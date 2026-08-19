@@ -237,7 +237,15 @@ export function ProfilePanel(props: ProfilePanelProps): React.JSX.Element {
               const cam = draft.cameras[camId] ?? emptyProfileCamera()
               const device = devices.find((d) => d.camId === camId)
               const label = rig?.cameras.find((c) => c.camId === camId)?.label ?? ''
-              const state = !device ? '안 보임' : device.opened ? '' : '사용 중'
+              // "사용 중" and "응답 없음" send the user to different places:
+              // one waits for the other consumer, the other is a cable.
+              const state = !device
+                ? '안 보임'
+                : device.opened
+                  ? ''
+                  : device.probeError === 'timeout'
+                    ? '응답 없음'
+                    : '사용 중'
               return (
                 <li key={camId} className="profile-camera">
                   <label className="profile-camera-name">

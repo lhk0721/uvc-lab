@@ -84,6 +84,8 @@ interface JetsonDevice {
   os_name_is_heuristic: boolean
   controlProfile: ControlProfile | null
   usb: JetsonUsbDescriptor | null
+  /** Why the probe gave up: "busy", "no frame", or "timeout". */
+  probeError?: string | null
 }
 
 interface RigCameraExpect {
@@ -279,9 +281,17 @@ interface Window {
     server: {
       start(jetsonId: string, host: string, port: number): Promise<ServerHealth>
       stop(jetsonId: string, host: string): Promise<void>
+      /** The box's own answer, not what this app remembers doing. */
+      status(jetsonId: string, host: string, serverPort: number): Promise<ServerStatus>
     }
     devices: {
-      list(jetsonId: string, host: string, serverPort: number): Promise<JetsonDevice[]>
+      /** refresh takes the cameras back from live previews to probe again. */
+      list(
+        jetsonId: string,
+        host: string,
+        serverPort: number,
+        refresh?: boolean
+      ): Promise<JetsonDevice[]>
     }
     rig: {
       get(jetsonId: string, host: string, serverPort: number): Promise<Rig | null>

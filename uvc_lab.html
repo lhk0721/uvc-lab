@@ -209,7 +209,9 @@ async function loadDevices() {
     // 목록에서 숨기지 않고 "사용 중"으로 보여준다.
     $("cam").innerHTML = devices.map(d => {
       const port = d.camId ? `${d.camId} ` : `index ${d.index} `;
-      const desc = d.opened ? (d.signature || `${d.width}x${d.height}`) : "사용 중";
+      const desc = d.opened
+        ? (d.signature || `${d.width}x${d.height}`)
+        : (d.probeError === "timeout" ? "응답 없음" : "사용 중");
       return `<option value="${d.index}">${port}— ${desc}</option>`;
     }).join("") || '<option value="">장치 없음</option>';
   } catch (e) {

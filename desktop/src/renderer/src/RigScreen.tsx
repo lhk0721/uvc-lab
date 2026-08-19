@@ -32,6 +32,38 @@ interface Draft {
   trigger: RigTrigger
 }
 
+// A camera can enumerate, open, and still send nothing — measured on this
+// hardware, where one camera came back from a USB fault answering every query
+// but producing no frames. An <img> in that state stays blank forever and
+// fires no error, so the tile has to notice by itself: MJPEG never fires
+// onLoad, but a decoded first frame gives the element a size.
+const PREVIEW_FIRST_FRAME_MS = 6_000
+
+function PreviewTile({ src, caption }: { src: string; caption: string }) {
+  const imgRef = useRef<HTMLImageElement>(null)
+  const [stalled, setStalled] = useState(false)
+  useEffect(() => {
+    setStalled(false)
+    const started = Date.now()
+    // Keep looking rather than judging once: a slow camera on this hardware
+    // took longer than the deadline and then streamed fine, so a late first
+    // frame has to clear the warning instead of leaving a false alarm up.
+    const timer = setInterval(() => {
+      const gotFrame = (imgRef.current?.naturalWidth ?? 0) > 0
+      setStalled(!gotFrame && Date.now() - started > PREVIEW_FIRST_FRAME_MS)
+      if (gotFrame) clearInterval(timer)
+    }, 1_000)
+    return () => clearInterval(timer)
+  }, [src])
+  return (
+    <figure>
+      <img ref={imgRef} className="preview" alt={caption} src={src} />
+      {stalled && <p className="preview-stalled">프레임 없음 — 카메라가 응답하지 않습니다</p>}
+      <figcaption>{caption}</figcaption>
+    </figure>
+  )
+}
+
 export function RigScreen() {
   const { jetsonId } = useParams({ from: '/rig/$jetsonId' })
   const queryClient = useQueryClient()
@@ -52,9 +84,18 @@ export function RigScreen() {
   const tunnel = useStore(labStore, (s) => s.tunnels.find((t) => t.jetsonId === jetsonId))
   const serverPort = provision?.serverPort ?? tunnel?.remotePort ?? DEFAULT_SERVER_PORT
 
+  // Re-probing takes the cameras from any live preview, so it happens only
+  // when the user presses 다시 감지 — every other fetch is happy with the
+  // box's last inventory. The flag rides a ref rather than the query key so
+  // both answers stay one cache entry.
+  const forceProbe = useRef(false)
   const devices = useQuery<JetsonDevice[]>({
     queryKey: ['devices', jetsonId],
-    queryFn: () => window.labDesk.devices.list(jetsonId, host as string, serverPort),
+    queryFn: () => {
+      const probe = forceProbe.current
+      forceProbe.current = false
+      return window.labDesk.devices.list(jetsonId, host as string, serverPort, probe)
+    },
     enabled: !!host,
     retry: false
   })
@@ -252,6 +293,7 @@ export function RigScreen() {
   }
 
   const refresh = (): void => {
+    forceProbe.current = true
     void queryClient.invalidateQueries({ queryKey: ['devices', jetsonId] })
     void queryClient.invalidateQueries({ queryKey: ['rig', jetsonId] })
   }
@@ -293,6 +335,12 @@ export function RigScreen() {
   }
 
   const connectError = devices.isError || rig.isError
+  // 409 is the box saying the cameras are held, which is a different thing to
+  // fix than an unreachable server — telling the user to start the server
+  // would send them the wrong way.
+  const busyError = [devices.error, rig.error].some((err) =>
+    err ? /answered 409/.test((err as Error).message) : false
+  )
   const loading = devices.isPending || rig.isPending
   const triggerSource = draft?.trigger.source ?? null
   const detectedNew = (devices.data ?? []).filter(
@@ -314,7 +362,9 @@ export function RigScreen() {
 
       {connectError && (
         <p className="provision-line failed">
-          Jetson 서버에 연결하지 못했습니다 — 장비 카드에서 서버를 먼저 시작하세요.
+          {busyError
+            ? '카메라를 다른 쪽이 잡고 있습니다 — 실행 중인 측정이나 다른 프로그램이 놓을 때까지 기다리세요.'
+            : 'Jetson 서버에 연결하지 못했습니다 — 장비 카드에서 서버를 먼저 시작하세요.'}
           {devices.error ? ` (${(devices.error as Error).message})` : ''}
           {rig.error ? ` (${(rig.error as Error).message})` : ''}
         </p>
@@ -549,17 +599,13 @@ export function RigScreen() {
                   .map((d) => {
                     const cam = draft.cameras.find((c) => c.camId && c.camId === d.camId)
                     return (
-                      <figure key={d.index}>
-                        <img
-                          className="preview"
-                          alt={`video${d.index}`}
-                          src={`${tunnel.url}/stream.mjpg?index=${d.index}&resolution=640x480&quality=60&t=${devices.dataUpdatedAt}`}
-                        />
-                        <figcaption>
-                          {d.camId ? `${markOf(d.camId)} · ` : ''}
-                          {cam?.label || d.usb?.product || `video${d.index}`}
-                        </figcaption>
-                      </figure>
+                      <PreviewTile
+                        key={d.index}
+                        src={`${tunnel.url}/stream.mjpg?index=${d.index}&resolution=640x480&quality=60&t=${devices.dataUpdatedAt}`}
+                        caption={`${d.camId ? `${markOf(d.camId)} · ` : ''}${
+                          cam?.label || d.usb?.product || `video${d.index}`
+                        }`}
+                      />
                     )
                   })}
               </div>

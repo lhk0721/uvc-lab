@@ -54,14 +54,24 @@ const labDesk = {
     start: (jetsonId: string, host: string, port: number): Promise<ServerHealth> =>
       ipcRenderer.invoke('server:start', jetsonId, host, port),
     stop: (jetsonId: string, host: string): Promise<void> =>
-      ipcRenderer.invoke('server:stop', jetsonId, host)
+      ipcRenderer.invoke('server:stop', jetsonId, host),
+    /** The box's own answer, not what this app remembers doing. */
+    status: (jetsonId: string, host: string, serverPort: number): Promise<ServerStatus> =>
+      ipcRenderer.invoke('server:status', jetsonId, host, serverPort)
   },
 
   // Device/rig payloads pass through main untouched (JSON from the Jetson
   // server); their shapes are owned by the renderer-side mirror in env.d.ts.
   devices: {
-    list: (jetsonId: string, host: string, serverPort: number): Promise<unknown> =>
-      ipcRenderer.invoke('devices:list', jetsonId, host, serverPort)
+    // refresh=true takes the cameras away from any live preview to probe them
+    // again; without it the box answers from its last inventory while a
+    // preview is up (server: api_devices).
+    list: (
+      jetsonId: string,
+      host: string,
+      serverPort: number,
+      refresh = false
+    ): Promise<unknown> => ipcRenderer.invoke('devices:list', jetsonId, host, serverPort, refresh)
   },
 
   rig: {

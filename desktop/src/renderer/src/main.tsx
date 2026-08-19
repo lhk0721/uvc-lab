@@ -39,7 +39,13 @@ declare module '@tanstack/react-router' {
   }
 }
 
-const queryClient = new QueryClient()
+// Every query here crosses an SSH tunnel to a Jetson and some of them take
+// the cameras (device enumeration opens each one). Refetching because a
+// window regained focus would kill whatever preview is on screen, so the
+// refetch has to be something the user asked for.
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { refetchOnWindowFocus: false } }
+})
 
 // IPC push subscriptions are wired once, outside React (StrictMode-safe).
 initBridge()

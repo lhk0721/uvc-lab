@@ -147,8 +147,12 @@ app.whenReady().then(() => {
     if (!session) throw new Error('no SSH session and no stored credentials')
     return session
   }
-  ipcMain.handle('devices:list', async (_event, jetsonId, host, port) =>
-    jetsonGet(await jetsonSession(jetsonId, host), Number(port), '/api/devices')
+  ipcMain.handle('devices:list', async (_event, jetsonId, host, port, refresh) =>
+    jetsonGet(
+      await jetsonSession(jetsonId, host),
+      Number(port),
+      refresh ? '/api/devices?refresh=1' : '/api/devices'
+    )
   )
   ipcMain.handle('rig:get', async (_event, jetsonId, host, port) => {
     try {

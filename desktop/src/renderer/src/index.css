@@ -420,6 +420,11 @@ footer {
   gap: 0.4rem;
   margin-bottom: 0.4rem;
 }
+.preview-stalled {
+  margin: 0.25rem 0 0;
+  font-size: 0.85rem;
+  color: #c98b3a;
+}
 .camera-panel img.preview,
 .camera-panel .preview.placeholder {
   width: 100%;
