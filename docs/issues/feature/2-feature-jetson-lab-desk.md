@@ -1220,3 +1220,17 @@ wiring confirmed first.
 - How verified: `gh issue list` shows #4-#7 open, and the `addSubIssue`
   mutation returned each number, so the umbrella now holds them as sub-issues.
   No code paths touched.
+
+## chore: umbrella 문서에 #3 등록 (#2)
+
+- What: added #3 (`fix: UVC anti-flicker를 60Hz로 맞추고 밝기 변동 지표 추가`)
+  to the umbrella document's task list and registered it as a sub-issue of #1.
+- Why: the user's call. #3 was opened outside this branch and had neither an
+  umbrella row nor a sub-issue link, so it was invisible to the one document
+  that is supposed to hold the whole workstream. It also overlaps this branch's
+  hardware findings — its measurement of the camera on hub port 3 swinging
+  39.1% peak-to-peak in brightness at ~8.85 Hz is the same camera that step 13
+  found running at ~9fps against ~15fps for the other two.
+- How verified: the `addSubIssue` mutation returned 3, and querying #1's
+  sub-issues now lists #2 through #7. No management document exists for #3 yet,
+  so its Doc column stays empty until that work starts. No code paths touched.
