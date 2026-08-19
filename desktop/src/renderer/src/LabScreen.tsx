@@ -99,7 +99,12 @@ export function LabScreen() {
     queryFn: () => window.labDesk.lab.run(jetsonId, host as string, serverPort, runId as string),
     enabled: !!host && !!runId,
     retry: false,
-    refetchInterval: (query) => (runFinished(query.state.data) ? false : RUN_POLL_MS)
+    refetchInterval: (query) => (runFinished(query.state.data) ? false : RUN_POLL_MS),
+    // A measurement runs on the box, not in this window. Without this the
+    // poll stops the moment the operator switches to another window and the
+    // run sits at "running" until they come back — measured against a real
+    // run that had already finished on the Jetson.
+    refetchIntervalInBackground: true
   })
   const running = run.data?.status === 'running'
 

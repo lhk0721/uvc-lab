@@ -1132,3 +1132,17 @@ step of its own, and it needs the wiring to be confirmed first (section 12).
   시작, and the rig screen's previews render through it. The poll is one
   `systemctl --user is-active` over the pooled SSH session per interval, and it
   never overwrites a start/stop this card is in the middle of.
+
+## fix: 창이 뒤에 있어도 실행 폴링을 계속한다 (#2)
+
+- What: the lab screen's run query sets `refetchIntervalInBackground: true`.
+- Why: a measurement runs on the Jetson, not in this window, but React Query
+  pauses interval refetches while the window is not focused. The run therefore
+  froze at "running" the moment the operator looked at another window — and
+  since the focus refetch is deliberately off (it would seize the cameras), it
+  did not catch up on return either.
+- How verified: at the box, an `identify` run finished on the Jetson in 11.5s
+  (`status: done`, `rigStatus: missing` recorded) while the app kept showing
+  "running"; querying the same run over IPC returned `done`, so the data path
+  was fine and only the poll had stopped. With the window focused the badge
+  flipped to 완료 and the result table appeared.
