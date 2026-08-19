@@ -1201,3 +1201,22 @@ wiring confirmed first.
   (`error -71`, `HC died`), the port-to-node mapping before and after the move
   (`usb-0:1.1` at `/dev/video0` in the morning, `/dev/video4` after the fault),
   the frame rates (9fps vs 15fps), and avahi's empty service directory.
+
+## chore: 13단계에서 남은 것들을 후속 이슈로 등록 (#2)
+
+- What: opened #4 (the three discovery routes never run on hardware), #5 (the
+  mDNS advertisement the box does not publish), #6 (trigger verification and
+  the GPIO pulse source it needs), and #7 (the capture a dying camera holds
+  until the server restarts), registered all four as sub-issues of umbrella #1,
+  added their rows to the umbrella document, and refreshed the active-context
+  pointer in AGENTS.md, which still said implementation had not started.
+- Why: the user's call — anything that does not stop the app from working
+  belongs in the tracker, not in this branch. Each of the four was recorded
+  only as an open item in a design document, where the next session would have
+  had to read the whole spec to find it. The issue bodies carry the
+  measurements that make them actionable (avahi's empty service directory, the
+  Tailscale route seen once as relayed, the blocked `cap.read()`), so none of
+  it has to be rediscovered at the box.
+- How verified: `gh issue list` shows #4-#7 open, and the `addSubIssue`
+  mutation returned each number, so the umbrella now holds them as sub-issues.
+  No code paths touched.
