@@ -68,6 +68,12 @@ const cipher: CredentialCipher = {
   decrypt: (blob) => safeStorage.decryptString(blob)
 }
 
+// Verification seam: `UVC_DEBUG_PORT=9222 npm run dev` opens the Chrome
+// DevTools protocol so a driver script can exercise the real DOM against a
+// real box. Off unless the variable is set, so a normal run exposes nothing.
+const debugPort = process.env['UVC_DEBUG_PORT']
+if (debugPort) app.commandLine.appendSwitch('remote-debugging-port', debugPort)
+
 app.whenReady().then(() => {
   const store = new CredentialStore(join(app.getPath('userData'), 'credentials.json'), cipher)
   const pool = new SshPool(store)

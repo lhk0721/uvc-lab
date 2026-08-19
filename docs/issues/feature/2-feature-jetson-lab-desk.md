@@ -1146,3 +1146,17 @@ step of its own, and it needs the wiring to be confirmed first (section 12).
   "running"; querying the same run over IPC returned `done`, so the data path
   was fine and only the poll had stopped. With the window focused the badge
   flipped to 완료 and the result table appeared.
+
+## chore: 실물 검증용 CDP 시임 (#2)
+
+- What: `UVC_DEBUG_PORT=<port> npm run dev` appends Chromium's
+  `remote-debugging-port` switch in main. Unset, nothing is opened.
+- Why: step 13 has to exercise the real DOM against a real Jetson — the rig
+  screen's detection, the section 5 gate, the section 8 profile gate — and
+  clicking those by hand for every restart of the app is not repeatable. The
+  earlier dev smoke used a driver that was deleted before committing; the user
+  chose to keep this seam so the next round of hardware verification can drive
+  the same path.
+- How verified: used for the whole of today's verification. With the variable
+  set, `/json/list` offers the renderer target and a driver script evaluates in
+  the page; without it, Electron opens no debugging port.
