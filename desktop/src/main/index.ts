@@ -5,7 +5,7 @@ import { CredentialStore, type CredentialCipher } from './credentials.ts'
 import { makeIdentify, SshPool, type SshSession } from './ssh.ts'
 import { Provisioner, startServer, stopServer, type ProvisionRunOptions } from './provision.ts'
 import { TunnelManager } from './tunnel.ts'
-import { jetsonGet, jetsonPut, JetsonHttpError } from './jetson-http.ts'
+import { jetsonGet, jetsonPost, jetsonPut, JetsonHttpError } from './jetson-http.ts'
 
 // The renderer runs fully locked down; everything OS-facing (SSH, mDNS,
 // filesystem, credentials) stays in this process and crosses only through
@@ -162,6 +162,51 @@ app.whenReady().then(() => {
   ipcMain.handle('rig:save', async (_event, jetsonId, host, port, rig) =>
     jetsonPut(await jetsonSession(jetsonId, host), Number(port), '/api/rig', rig)
   )
+
+  // Lab screen channels (spec section 7), same relay as above: the renderer
+  // never reaches the box itself, so every URL is built here from typed
+  // arguments rather than passed through.
+  const deviceIndex = (raw: unknown): number => {
+    const index = Number(raw)
+    if (!Number.isInteger(index) || index < 0) throw new Error(`invalid device index: ${raw}`)
+    return index
+  }
+  ipcMain.handle('lab:modes', async (_event, jetsonId, host, port) =>
+    jetsonGet(await jetsonSession(jetsonId, host), Number(port), '/api/modes')
+  )
+  ipcMain.handle('lab:presets', async (_event, jetsonId, host, port) =>
+    jetsonGet(await jetsonSession(jetsonId, host), Number(port), '/api/presets')
+  )
+  ipcMain.handle('lab:streams', async (_event, jetsonId, host, port) =>
+    jetsonGet(await jetsonSession(jetsonId, host), Number(port), '/api/streams')
+  )
+  ipcMain.handle('lab:controls', async (_event, jetsonId, host, port, index) =>
+    jetsonGet(
+      await jetsonSession(jetsonId, host),
+      Number(port),
+      `/api/controls?index=${deviceIndex(index)}`
+    )
+  )
+  ipcMain.handle('lab:setControl', async (_event, jetsonId, host, port, change) =>
+    jetsonPost(await jetsonSession(jetsonId, host), Number(port), '/api/controls', {
+      index: deviceIndex(change?.index),
+      key: String(change?.key ?? ''),
+      value: Number(change?.value)
+    })
+  )
+  ipcMain.handle('lab:runStart', async (_event, jetsonId, host, port, request) =>
+    jetsonPost(await jetsonSession(jetsonId, host), Number(port), '/api/runs', {
+      preset: String(request?.preset ?? ''),
+      params: request?.params ?? {},
+      // Spec section 5: the rig state a run was started under travels with it.
+      rigStatus: request?.rigStatus ?? null
+    })
+  )
+  ipcMain.handle('lab:run', async (_event, jetsonId, host, port, runId) => {
+    const id = String(runId)
+    if (!/^[0-9a-f]{1,32}$/.test(id)) throw new Error(`invalid run id: ${id}`)
+    return jetsonGet(await jetsonSession(jetsonId, host), Number(port), `/api/runs/${id}`)
+  })
 
   ipcMain.handle('tunnel:open', (_event, jetsonId, host, remotePort) =>
     tunnels.open(String(jetsonId), String(host), Number(remotePort))

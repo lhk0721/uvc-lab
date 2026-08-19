@@ -320,3 +320,30 @@ export function portSlots(cams: RigCamera[], devices: JetsonDevice[]): PortSlot[
     return pa.suffix < pb.suffix ? -1 : 1
   })
 }
+
+// ---- how the match reads on screen (shared by both screens) ----------------
+
+export const STATUS_LABEL: Record<RigStatus, string> = {
+  ok: '구성 일치 — 랩 화면 진입 가능',
+  missing: '등록된 카메라가 안 보입니다',
+  'unknown-device': '등록되지 않은 카메라가 있습니다',
+  'changed-device': '다른 카메라가 꽂혀 있습니다',
+  busy: '카메라를 다른 프로세스가 쓰고 있습니다',
+  'hub-moved': '허브가 다른 포트로 옮겨진 것 같습니다',
+  'no-rig': '등록된 rig이 없습니다 — 구성을 먼저 등록해야 합니다'
+}
+
+export function issueMessage(issue: MatchIssue): string {
+  switch (issue.kind) {
+    case 'missing':
+      return `${issue.label || issue.camId} 카메라(${issue.mark})가 안 보입니다`
+    case 'changed-device':
+      return `${issue.mark}에 다른 카메라가 꽂혀 있습니다 (기대 ${issue.expected} → 현재 ${issue.actual})`
+    case 'busy':
+      return `${issue.mark}를 다른 프로세스가 쓰고 있습니다`
+    case 'unknown-device':
+      return issue.bindable
+        ? `${issue.mark}의 카메라를 아래 미바인딩 항목에 연결할 수 있습니다`
+        : `${issue.mark}에 등록되지 않은 카메라가 있습니다`
+  }
+}

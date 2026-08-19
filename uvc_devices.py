@@ -469,7 +469,36 @@ _VIDIOC_QUERYCTRL = 0xC0445624
 _V4L2_CTRL_FLAG_DISABLED = 0x0001
 
 
-def _v4l2_ctrl_range(fd: int, cid: int) -> tuple[int, int] | None:
+_V4L2_CTRL_FLAG_GRABBED = 0x0002
+_V4L2_CTRL_FLAG_READ_ONLY = 0x0004
+_CTRL_TYPE_NAMES = {1: "int", 2: "bool", 3: "menu", 4: "button", 5: "int64", 6: "class"}
+
+
+def _parse_queryctrl(res: bytes) -> dict | None:
+    """Decode one v4l2_queryctrl reply; None when the control is disabled.
+
+    Split out from the ioctl so the decoding — the part that can be wrong
+    with no camera in sight — is testable off-Linux.
+    """
+    vals = struct.unpack(_QUERYCTRL_FMT, res)
+    flags = vals[7]  # id, type, name, min, max, step, default, flags, reserved[2]
+    if flags & _V4L2_CTRL_FLAG_DISABLED:
+        return None
+    return {
+        "id": vals[0],
+        "type": _CTRL_TYPE_NAMES.get(vals[1], "other"),
+        "name": vals[2].split(b"\0")[0].decode("utf-8", "replace"),
+        "min": vals[3],
+        "max": vals[4],
+        "step": vals[5] or 1,
+        "default": vals[6],
+        # GRABBED = writable only while nothing streams. Reporting it as
+        # read-only beats letting the write fail later with a bare EBUSY.
+        "readOnly": bool(flags & (_V4L2_CTRL_FLAG_READ_ONLY | _V4L2_CTRL_FLAG_GRABBED)),
+    }
+
+
+def _queryctrl(fd: int, cid: int) -> dict | None:
     import fcntl  # Linux-only module; this path never runs on Windows
 
     req = struct.pack(_QUERYCTRL_FMT, cid, 0, b"", 0, 0, 0, 0, 0, 0, 0)
@@ -477,10 +506,12 @@ def _v4l2_ctrl_range(fd: int, cid: int) -> tuple[int, int] | None:
         res = fcntl.ioctl(fd, _VIDIOC_QUERYCTRL, req)
     except OSError:
         return None
-    vals = struct.unpack(_QUERYCTRL_FMT, res)
-    if vals[8] & _V4L2_CTRL_FLAG_DISABLED:
-        return None
-    return (vals[3], vals[4])  # minimum, maximum
+    return _parse_queryctrl(res)
+
+
+def _v4l2_ctrl_range(fd: int, cid: int) -> tuple[int, int] | None:
+    info = _queryctrl(fd, cid)
+    return None if info is None else (info["min"], info["max"])
 
 
 def control_profile(dev_node: str) -> str:
@@ -513,6 +544,125 @@ def control_profile(dev_node: str) -> str:
     if backlight == (16, 160):
         return "webcam-std"
     return "unknown"
+
+
+# ---- control read/write (spec §7.3) ----------------------------------------
+# WHICH controls to ask about is fixed here; their ranges never are. §1.5
+# measured two cameras of the same nominal model with different ranges for the
+# same control, so min/max/step/default are read from the device every time.
+_V4L2_CID_BASE = 0x00980900
+_V4L2_CID_CAMERA_CLASS_BASE = 0x009A0900
+CONTROL_IDS: dict[str, int] = {
+    "exposure_auto": _V4L2_CID_CAMERA_CLASS_BASE + 0x01,
+    "exposure_absolute": _V4L2_CID_CAMERA_CLASS_BASE + 0x02,
+    "exposure_auto_priority": _V4L2_CID_CAMERA_CLASS_BASE + 0x03,
+    "gain": _V4L2_CID_BASE + 0x13,
+    "brightness": _V4L2_CID_BASE + 0x00,
+    "contrast": _V4L2_CID_BASE + 0x01,
+    "saturation": _V4L2_CID_BASE + 0x02,
+    "gamma": _V4L2_CID_BASE + 0x10,
+    "sharpness": _V4L2_CID_BASE + 0x1B,
+    # Backlight Compensation and Hue are the trigger-mode switch and its
+    # frequency on trigger-v1 (§2.4) — the same two controls the profile
+    # detection reads, exposed here so the lab screen can drive them.
+    "backlight_compensation": _V4L2_CID_BASE + 0x1C,
+    "hue": _V4L2_CID_BASE + 0x03,
+    "auto_white_balance": _V4L2_CID_BASE + 0x0C,
+    "white_balance_temperature": _V4L2_CID_BASE + 0x1A,
+    "power_line_frequency": _V4L2_CID_BASE + 0x18,
+}
+
+# struct v4l2_querymenu is __attribute__((packed)): u32 id, u32 index,
+# u8 name[32] (union with s64), u32 reserved — 44 bytes.
+_QUERYMENU_FMT = "=II32sI"
+# VIDIOC_QUERYMENU = _IOWR('V', 37, struct v4l2_querymenu)
+_VIDIOC_QUERYMENU = 0xC02C5625
+# struct v4l2_control: u32 id, s32 value — 8 bytes.
+_CTRL_FMT = "Ii"
+_VIDIOC_G_CTRL = 0xC008561B  # _IOWR('V', 27, struct v4l2_control)
+_VIDIOC_S_CTRL = 0xC008561C  # _IOWR('V', 28, struct v4l2_control)
+_MENU_SCAN_LIMIT = 32
+
+
+def _query_menu(fd: int, cid: int, lo: int, hi: int) -> list[dict]:
+    import fcntl
+
+    entries = []
+    for index in range(max(lo, 0), min(hi, max(lo, 0) + _MENU_SCAN_LIMIT) + 1):
+        try:
+            res = fcntl.ioctl(fd, _VIDIOC_QUERYMENU,
+                              struct.pack(_QUERYMENU_FMT, cid, index, b"", 0))
+        except OSError:
+            continue  # holes are normal — a menu's values need not be contiguous
+        label = struct.unpack(_QUERYMENU_FMT, res)[2].split(b"\0")[0]
+        entries.append({"value": index,
+                        "label": label.decode("utf-8", "replace") or str(index)})
+    return entries
+
+
+def _get_ctrl(fd: int, cid: int) -> int | None:
+    import fcntl
+
+    try:
+        res = fcntl.ioctl(fd, _VIDIOC_G_CTRL, struct.pack(_CTRL_FMT, cid, 0))
+    except OSError:
+        return None
+    return struct.unpack(_CTRL_FMT, res)[1]
+
+
+def query_controls(dev_node: str) -> list[dict] | None:
+    """Every supported control with its device-reported range and value.
+
+    None means this platform cannot answer at all (no V4L2), which the client
+    must show as "unsupported" rather than as an empty control set. Like
+    ``control_profile``, this works while another process streams — only
+    streaming is exclusive, the control ioctls are not.
+    """
+    if not IS_LINUX:
+        return None
+    try:
+        fd = os.open(dev_node, os.O_RDWR | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        controls = []
+        for key, cid in CONTROL_IDS.items():
+            info = _queryctrl(fd, cid)
+            if info is None or info["type"] not in ("int", "bool", "menu"):
+                continue
+            info["key"] = key
+            info["value"] = _get_ctrl(fd, cid)
+            if info["type"] == "menu":
+                info["menu"] = _query_menu(fd, cid, info["min"], info["max"])
+            controls.append(info)
+        return controls
+    finally:
+        os.close(fd)
+
+
+def set_control(dev_node: str, key: str, value: int) -> int:
+    """Write one control, then report the value the driver actually kept.
+
+    Read-back is §7.2's rule applied to controls: drivers clamp, round to the
+    step, or refuse silently, and showing the requested number would be a
+    display of what was asked for rather than of what the camera is doing.
+    """
+    cid = CONTROL_IDS.get(key)
+    if cid is None:
+        raise ValueError(f"unknown control: {key}")
+    if not IS_LINUX:
+        raise RuntimeError("setting controls needs V4L2 (Linux)")
+    import fcntl
+
+    fd = os.open(dev_node, os.O_RDWR | os.O_NONBLOCK)
+    try:
+        # OSError propagates on purpose: EINVAL (out of range / not settable)
+        # and EBUSY (held by a streaming consumer) are different answers.
+        fcntl.ioctl(fd, _VIDIOC_S_CTRL, struct.pack(_CTRL_FMT, cid, int(value)))
+        got = _get_ctrl(fd, cid)
+    finally:
+        os.close(fd)
+    return int(value) if got is None else got
 
 
 def probe_max_resolution(index: int, api: int | None = None) -> tuple[int, int] | None:

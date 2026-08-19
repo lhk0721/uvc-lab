@@ -47,15 +47,20 @@ from pydantic import BaseModel
 ROOT = Path(__file__).resolve().parent
 
 from uvc_devices import (
+    FOURCC_CANDIDATES,
+    MODE_CANDIDATES,
     SETTLE_FRAMES,
     add_environment_args,
     backend_name,
     describe_signal,
+    fourcc_of,
     frame_signal,
     list_devices,
     open_capture,
+    query_controls,
     resolve_environment,
     set_capture_defaults,
+    set_control,
 )
 from uvc_lab_presets import (
     PRESETS_BY_ID,
@@ -147,6 +152,15 @@ app = FastAPI(title="UVC Camera Lab")
 class RunRequest(BaseModel):
     preset: str
     params: dict = {}
+    # Spec §5: a run started past a rig mismatch ("무시하고 진행") records the
+    # status it ran under, so no result is left without its configuration.
+    rigStatus: str | None = None
+
+
+class ControlRequest(BaseModel):
+    index: int
+    key: str
+    value: int
 
 
 @app.get("/")
@@ -219,9 +233,58 @@ def api_rig_put(rig: dict):
     return rig
 
 
+@app.get("/api/modes")
+def api_modes():
+    # The candidate lists live on the box, in uvc_devices, so the lab screen
+    # never carries a second copy of them. These are candidates only — what a
+    # camera actually honours is whatever the read-back reports (§7.2).
+    return {
+        "resolutions": [f"{w}x{h}" for (w, h) in
+                        sorted(MODE_CANDIDATES, key=lambda m: -m[0] * m[1])],
+        "fourccs": list(FOURCC_CANDIDATES),
+    }
+
+
+def _dev_node(index: int) -> str:
+    return f"/dev/video{int(index)}"
+
+
+@app.get("/api/controls")
+def api_controls(index: int = 0):
+    # supported=False (no V4L2) is a different answer from "no controls", and
+    # the client must not render one as the other (§7.3).
+    controls = query_controls(_dev_node(index))
+    if controls is None:
+        return {"index": index, "supported": False, "controls": []}
+    return {"index": index, "supported": True, "controls": controls}
+
+
+@app.post("/api/controls")
+def api_set_control(request: ControlRequest):
+    try:
+        value = set_control(_dev_node(request.index), request.key, request.value)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    except OSError as exc:
+        # EINVAL = out of range or not settable; EBUSY = a streaming consumer
+        # holds it. Both are the device's answer, not a server fault.
+        raise HTTPException(409, f"{request.key}: {exc.strerror or exc}")
+    except RuntimeError as exc:
+        raise HTTPException(501, str(exc))
+    # The value the driver kept, not the one that was asked for.
+    return {"index": request.index, "key": request.key, "value": value}
+
+
 @app.get("/api/presets")
 def api_presets():
     return public_presets()
+
+
+@app.get("/api/streams")
+def api_streams():
+    # Every stream at once: the lab screen previews several cameras and would
+    # otherwise poll once per camera (spec §7.1).
+    return {"streams": {str(k): v for k, v in stream_stats.items()}}
 
 
 @app.get("/api/stream/stats")
@@ -234,15 +297,26 @@ def api_stream_stats(index: int | None = None):
     return next((s for s in stream_stats.values() if s.get("active")), {"active": False})
 
 
-def _mjpeg(index: int, width: int, height: int, fourcc: str, quality: int):
+def _mjpeg(index: int, width: int, height: int, fourcc: str, quality: int,
+           fps: int | None = None):
     """Multipart JPEG stream — an <img> tag renders it with no client code."""
     boundary = b"--frame\r\n"
     stats = stream_stats.setdefault(index, {})
     try:
         with broker.preview():
-            cap = open_capture(index, width, height, fourcc, None)
+            cap = open_capture(index, width, height, fourcc, fps)
+            # Requested vs observed, both kept (spec §7.2): a UVC driver
+            # silently substitutes its nearest mode, so showing the request
+            # back would report a setting that never took.
             stats.update({"active": True, "index": index, "fps": 0.0,
-                          "signal": None, "error": None})
+                          "signal": None, "error": None,
+                          "requested": {"width": width, "height": height,
+                                        "fourcc": fourcc, "fps": fps},
+                          "observed": {
+                              "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                              "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+                              "fourcc": fourcc_of(cap),
+                              "driverFps": round(cap.get(cv2.CAP_PROP_FPS), 2)}})
             # The first frames after open are null buffers (frame 0 is
             # reliably all-zero); sampling them would report a healthy camera
             # as dead in the UI.
@@ -291,10 +365,10 @@ def _mjpeg(index: int, width: int, height: int, fourcc: str, quality: int):
 
 @app.get("/stream.mjpg")
 def api_stream(index: int = 0, resolution: str = "1280x720",
-               fourcc: str = "MJPG", quality: int = 80):
+               fourcc: str = "MJPG", quality: int = 80, fps: int | None = None):
     width, height = (int(v) for v in resolution.split("x"))
     return StreamingResponse(
-        _mjpeg(index, width, height, fourcc, quality),
+        _mjpeg(index, width, height, fourcc, quality, fps),
         media_type="multipart/x-mixed-replace; boundary=frame",
         headers={"Cache-Control": "no-store"},
     )
@@ -356,7 +430,7 @@ def api_start_run(request: RunRequest):
         runs[run_id] = {"id": run_id, "preset": request.preset,
                         "title": preset["title"], "status": "running",
                         "started": time.time(), "log": [], "result": None,
-                        "error": None}
+                        "error": None, "rigStatus": request.rigStatus}
 
     params = normalise_params(preset, request.params)
     threading.Thread(target=_execute, args=(run_id, preset, params), daemon=True).start()

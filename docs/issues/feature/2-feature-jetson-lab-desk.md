@@ -286,14 +286,49 @@ per index with the old flat shape kept for the single-preview page; and
 `/api/devices` now also returns `idPath` so the client can derive
 `rig.host.usbRoot`.
 
+Step 11 is coded: the lab screen (`lab.ts`, `LabScreen.tsx`) with the server
+work it needs. `lab.ts` is React-free and holds the parts worth testing without
+a browser: the preview URL (a nonce is what makes a mode change take - an
+`<img>` on an open multipart response never re-requests), the
+requested-versus-observed comparison, control clamping against the range the
+device reported, preset parameter coercion, run-log bookkeeping, and the
+section 5 gate. `LabScreen.tsx` renders them: every camera previewing at once
+through the tunnel, a mode form per camera whose result line shows what the
+driver actually gave (with the substitution spelled out when it differs), a
+parameter panel built from the device's own min/max/step/default, the existing
+`uvc_lab_presets.py` presets with their parameter forms, and the run's output
+flowing into the same log panel as provision and start. The section 5 gate
+lives here: anything but `ok` blocks the screen and the way past it is an
+explicit "무시하고 진행" that records the status on every run started
+afterwards. Previews are dropped while a run holds the cameras and reconnect
+when it finishes, because the broker preempts them and an `<img>` will not
+retry on its own. Server side: `uvc_devices.py` gained a general V4L2 control
+layer (`query_controls` / `set_control` over QUERYCTRL, QUERYMENU, G_CTRL and
+S_CTRL on a separate fd, so it works while another consumer streams) and
+`serve_uvc_lab.py` gained `/api/modes`, `GET`/`POST /api/controls`,
+`/api/streams`, an `fps` parameter plus the requested/observed pair on the
+stream stats, and a `rigStatus` field recorded on every run. Main relays all of
+it (`lab:*` channels through `jetson-http.ts`, which now speaks POST and
+refuses any path that could break out of the remote command line).
+
+Section 7.4 (trigger verification) is deliberately NOT part of step 11 - the
+step's own scope line lists preview, mode, parameters and benchmark. It needs
+pulse generation from the Jetson's GPIO, which is a Jetson-side subsystem that
+does not exist yet, and section 12 still records that the wiring itself is
+unconfirmed on this box. It therefore needs its own step, after the wiring is
+seen to exist.
+
 Next step: with the Jetson on — verify step 2 (3 cameras on `usb-0:1.1/1.2/1.4`,
 profiles `trigger-v1`×2 + `webcam-std`), see the box discovered per route, run
 a real provision end-to-end from the card (aarch64 path, real linger/sudo, uv
 install branch), see real HTTP flow through the tunnel to `serve_uvc_lab.py`,
-and register the real rig from the screen (three simultaneous previews, port
-identity, the section 5 match against the saved rig); meanwhile step 11 (lab
-screen — preview, mode, parameters, benchmark, spec section 7) can proceed
-offline.
+register the real rig from the screen (three simultaneous previews, port
+identity, the section 5 match against the saved rig), and drive the lab screen
+against real cameras (the V4L2 control ioctls, which no off-Jetson test can
+exercise; a real mode substitution; a preset run preempting live previews);
+meanwhile step 12 (test profiles + the `requires` gate, spec section 8) can
+proceed offline, and section 7.4's trigger verification waits for a step of its
+own.
 
 ## feature: Jetson Lab Desk 설계 문서 (#2)
 
@@ -838,3 +873,70 @@ offline.
   host of the provision that reported that id. Pending at the box (batched):
   the real three-camera registration, real previews, and the match against a
   rig saved on the Jetson itself.
+
+## feat: 랩 화면 — 프리뷰·모드·파라미터·벤치마크 (#2)
+
+- What: spec section 11 step 11 - `desktop/src/renderer/src/lab.ts` and
+  `LabScreen.tsx` behind a `/lab/$jetsonId` route and a `랩` link on the device
+  card, the `lab:*` relay channels (`modes` / `presets` / `streams` /
+  `controls` / `setControl` / `runStart` / `run`) with POST support in
+  `jetson-http.ts`, and the server side they call: `uvc_devices.py` gains a
+  general V4L2 control layer (`query_controls`, `set_control`) and
+  `serve_uvc_lab.py` gains `/api/modes`, `GET`/`POST /api/controls`,
+  `/api/streams`, an `fps` stream parameter with the requested/observed pair in
+  the stats, and `rigStatus` on every run record. `STATUS_LABEL` and
+  `issueMessage` moved from `RigScreen.tsx` into `rig.ts` so both screens read
+  the match the same way; the rig screen now links to the lab screen when the
+  match is `ok`.
+- Why: this is the screen the earlier steps were for, and three decisions in it
+  are not obvious. (1) Everything except the preview goes through the same
+  SSH relay as devices/rig rather than the tunnel, so the screen works before a
+  tunnel exists and the renderer never learns which transport carried the call
+  (spec section 9); the preview is the exception because an `<img>` needs a URL
+  it can fetch itself. (2) Control ranges are read from the device on every
+  query and the write reports back the value the driver kept, not the one that
+  was asked for - the same rule section 7.2 states for modes, applied to
+  controls, because section 1.5 already measured two cameras of the same
+  nominal model disagreeing on the same control's range. (3) The section 5
+  gate lives on this screen: anything but `ok` blocks it, the only way past is
+  an explicit "무시하고 진행", and from then on every run carries that status so
+  no number is left without the configuration it came from. Previews are
+  dropped for the duration of a run because the broker preempts them anyway and
+  an `<img>` does not reconnect on its own - the screen re-issues the URLs with
+  a fresh nonce when the run ends.
+- How verified: success criterion set up front - (1) typecheck + build, (2)
+  logic offline on both sides, (3) a DOM-driven dev smoke. `npm run typecheck`
+  and `electron-vite build` pass clean on the committed code. Python checks 9/9
+  with no camera and no Linux: every ioctl request number and struct size
+  recomputed from the kernel's `_IOWR` formula, `queryctrl` decoding (name,
+  signed ranges as exposure reports them, a zero step floored to 1), the
+  DISABLED/GRABBED flags, the control ids against videodev2.h, the guards on
+  `set_control`, `/api/modes` serving the box's own candidate lists,
+  `/api/controls` (supported flag, device node, driver-kept value, EINVAL as
+  409), `/api/streams` alongside the unchanged flat stats, and a run recording
+  the `rigStatus` it was started under. Two of those caught real bugs before
+  any hardware could: `VIDIOC_G_CTRL`/`S_CTRL` were written with their decimal
+  request numbers pasted into hex (0x...27/28 instead of 0x...1B/1C), which
+  would have made every control read fail on the box; and the pre-existing
+  `queryctrl` decode read flags from `reserved[0]` (index 8, not 7), so a
+  disabled control would have been accepted with a meaningless range - both
+  fixed here. Plain-Node checks 10/10: preview URLs (nonce, fps only when
+  asked), the mode delta in both directions, clamping against a device range of
+  16..160 step 8 and a negative exposure range, preset defaults and per-type
+  coercion, run-log slicing, the gate across all seven states, and jetson-http's
+  POST body on stdin plus the new path guard refusing a path with shell
+  metacharacters. That guard's test also caught `parseNumberList('')` returning
+  `[0]` - an empty camera list would have meant "camera 0", not "none". Dev
+  smoke through the real DOM against the mock Jetson: install -> start -> `랩`
+  -> the gate reporting `no-rig` with the lab sections hidden -> `무시하고
+  진행` -> 3 camera panels -> preview decoding through the tunnel -> request
+  1920x1200 MJPG 60 answered with `관측 1280x720 YUY2 30fps` and the
+  substitution spelled out on all three fields -> gain slider carrying the
+  device's own 16..160 step 8 -> a write of 500 clamped to 160 and displayed as
+  the 128 the mock's driver kept -> a run pausing the previews, its log lines
+  arriving in the shared panel, the result rendered with `rig: no-rig`, and the
+  previews reconnecting afterwards; zero error lines, driver removed before
+  commit. Pending at the box (batched): the V4L2 control ioctls against real
+  cameras, a real driver substitution, and a preset run preempting live
+  previews. Section 7.4 (trigger verification) is out of this step's scope and
+  recorded above as needing its own.

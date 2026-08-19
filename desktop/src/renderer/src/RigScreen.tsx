@@ -9,28 +9,18 @@ import {
   CONNECTOR_PROFILES,
   DEFAULT_CONNECTOR,
   emptyWiring,
+  issueMessage,
   markOf,
   matchRig,
   portSlots,
   snapshotExpect,
+  STATUS_LABEL,
   toggleSignal,
   trgAllowed,
-  usbRootOf,
-  type MatchIssue,
-  type RigStatus
+  usbRootOf
 } from './rig'
 
 const DEFAULT_SERVER_PORT = 18100
-
-const STATUS_LABEL: Record<RigStatus, string> = {
-  ok: '구성 일치 — 랩 화면 진입 가능',
-  missing: '등록된 카메라가 안 보입니다',
-  'unknown-device': '등록되지 않은 카메라가 있습니다',
-  'changed-device': '다른 카메라가 꽂혀 있습니다',
-  busy: '카메라를 다른 프로세스가 쓰고 있습니다',
-  'hub-moved': '허브가 다른 포트로 옮겨진 것 같습니다',
-  'no-rig': '등록된 rig이 없습니다 — 아래에서 구성을 만들고 저장하세요'
-}
 
 // The two defaults come from rack-tracker's FSIN wiring doc (spec 6.2); any
 // other pin is legal and simply has no conventional name.
@@ -40,21 +30,6 @@ interface Draft {
   name: string
   cameras: RigCamera[]
   trigger: RigTrigger
-}
-
-function issueMessage(issue: MatchIssue): string {
-  switch (issue.kind) {
-    case 'missing':
-      return `${issue.label || issue.camId} 카메라(${issue.mark})가 안 보입니다`
-    case 'changed-device':
-      return `${issue.mark}에 다른 카메라가 꽂혀 있습니다 (기대 ${issue.expected} → 현재 ${issue.actual})`
-    case 'busy':
-      return `${issue.mark}를 다른 프로세스가 쓰고 있습니다`
-    case 'unknown-device':
-      return issue.bindable
-        ? `${issue.mark}의 카메라를 아래 미바인딩 항목에 연결할 수 있습니다`
-        : `${issue.mark}에 등록되지 않은 카메라가 있습니다`
-  }
 }
 
 export function RigScreen() {
@@ -348,6 +323,11 @@ export function RigScreen() {
       {!connectError && !loading && (
         <section className={`rig-status ${match.status}`}>
           <strong>{STATUS_LABEL[match.status]}</strong>
+          {match.status === 'ok' && (
+            <Link className="button-link" to="/lab/$jetsonId" params={{ jetsonId }}>
+              랩 화면으로
+            </Link>
+          )}
           {match.hubMove && (
             <button type="button" onClick={acceptHubMove}>
               매핑을 통째로 옮기기 ({match.hubMove.fromPrefix}.x → {match.hubMove.toPrefix}.x)

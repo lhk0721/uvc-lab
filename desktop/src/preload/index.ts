@@ -71,6 +71,38 @@ const labDesk = {
       ipcRenderer.invoke('rig:save', jetsonId, host, serverPort, rig)
   },
 
+  // Lab screen (spec section 7), relayed the same way as devices/rig; the
+  // payload shapes are owned by the renderer-side mirror in env.d.ts.
+  lab: {
+    modes: (jetsonId: string, host: string, serverPort: number): Promise<unknown> =>
+      ipcRenderer.invoke('lab:modes', jetsonId, host, serverPort),
+    presets: (jetsonId: string, host: string, serverPort: number): Promise<unknown> =>
+      ipcRenderer.invoke('lab:presets', jetsonId, host, serverPort),
+    streams: (jetsonId: string, host: string, serverPort: number): Promise<unknown> =>
+      ipcRenderer.invoke('lab:streams', jetsonId, host, serverPort),
+    controls: (
+      jetsonId: string,
+      host: string,
+      serverPort: number,
+      index: number
+    ): Promise<unknown> => ipcRenderer.invoke('lab:controls', jetsonId, host, serverPort, index),
+    setControl: (
+      jetsonId: string,
+      host: string,
+      serverPort: number,
+      change: { index: number; key: string; value: number }
+    ): Promise<unknown> =>
+      ipcRenderer.invoke('lab:setControl', jetsonId, host, serverPort, change),
+    runStart: (
+      jetsonId: string,
+      host: string,
+      serverPort: number,
+      request: { preset: string; params: Record<string, unknown>; rigStatus?: string | null }
+    ): Promise<unknown> => ipcRenderer.invoke('lab:runStart', jetsonId, host, serverPort, request),
+    run: (jetsonId: string, host: string, serverPort: number, runId: string): Promise<unknown> =>
+      ipcRenderer.invoke('lab:run', jetsonId, host, serverPort, runId)
+  },
+
   tunnel: {
     open: (jetsonId: string, host: string, remotePort: number): Promise<TunnelInfo> =>
       ipcRenderer.invoke('tunnel:open', jetsonId, host, remotePort),

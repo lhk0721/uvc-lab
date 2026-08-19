@@ -384,3 +384,176 @@ footer {
   text-decoration: none;
   color: inherit;
 }
+
+/* ---- lab screen (spec section 7) ---------------------------------------- */
+.lab-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem 1.25rem 2rem;
+}
+.lab-screen h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+.gate-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-top: 0.4rem;
+}
+.camera-grid {
+  display: flex;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+}
+.camera-panel {
+  border: 1px solid #3a3f4b;
+  border-radius: 6px;
+  padding: 0.6rem;
+  width: 320px;
+}
+.camera-panel header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.4rem;
+}
+.camera-panel img.preview,
+.camera-panel .preview.placeholder {
+  width: 100%;
+  min-height: 150px;
+  background: #111;
+  border-radius: 4px;
+}
+.camera-panel .preview.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #8a919e;
+}
+.mode-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.5rem 0 0.3rem;
+}
+.mode-form label {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+}
+.fps-input {
+  width: 4.5rem;
+}
+.observed {
+  font-size: 0.85rem;
+  color: #c8ccd4;
+}
+.mode-delta {
+  margin: 0.3rem 0 0;
+  color: #e5c07b;
+  font-size: 0.85rem;
+}
+.control-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.4rem;
+}
+.control-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.control-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.9rem;
+}
+.control-row.dim {
+  color: #8a919e;
+}
+.control-name {
+  width: 18rem;
+}
+.control-value {
+  width: 6rem;
+}
+.bench-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.4rem;
+}
+.bench-params {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin: 0.5rem 0;
+}
+.bench-params > label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+}
+.bench-params .multi {
+  display: inline-flex;
+  gap: 0.4rem;
+}
+.run-result {
+  border: 1px solid #3a3f4b;
+  border-left-width: 3px;
+  border-radius: 4px;
+  padding: 0.6rem;
+}
+.run-result.done {
+  border-left-color: #7bc96f;
+}
+.run-result.error {
+  border-left-color: #e06c75;
+}
+.run-result.running {
+  border-left-color: #61afef;
+}
+.run-result header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.run-result .headline {
+  font-weight: 600;
+}
+.run-result .headline.warn {
+  color: #e5c07b;
+}
+.run-result .headline.fail {
+  color: #e06c75;
+}
+.badge.warn {
+  color: #e5c07b;
+}
+.result-table {
+  border-collapse: collapse;
+  margin: 0.4rem 0;
+  font-size: 0.85rem;
+}
+.result-table caption {
+  text-align: left;
+  color: #8a919e;
+  padding-bottom: 0.2rem;
+}
+.result-table th,
+.result-table td {
+  border: 1px solid #3a3f4b;
+  padding: 0.15rem 0.5rem;
+  text-align: right;
+}

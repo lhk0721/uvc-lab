@@ -21,20 +21,26 @@ export class JetsonHttpError extends Error {
 async function request(
   session: SshSession,
   port: number,
-  method: 'GET' | 'PUT',
+  method: 'GET' | 'PUT' | 'POST',
   path: string,
   body?: string
 ): Promise<unknown> {
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     throw new Error(`invalid server port: ${port}`)
   }
+  // The URL ends up on a command line on the box, so the path is restricted
+  // to what a path and a query string need, then single-quoted. Callers build
+  // paths from typed arguments; this is the backstop, not the only check.
+  if (!/^\/[A-Za-z0-9/._~-]*(\?[A-Za-z0-9=&._~%-]*)?$/.test(path)) {
+    throw new Error(`refusing unsafe request path: ${path}`)
+  }
   // -w appends the status on its own line so one exec returns both; the body
   // (JSON) can itself contain newlines, so split at the LAST one.
   const url = `http://127.0.0.1:${port}${path}`
   const command =
     method === 'GET'
-      ? `curl -s -m 25 -o - -w '\\n%{http_code}' ${url}`
-      : `curl -s -m 25 -X PUT -H 'Content-Type: application/json' --data-binary @- -o - -w '\\n%{http_code}' ${url}`
+      ? `curl -s -m 25 -o - -w '\\n%{http_code}' '${url}'`
+      : `curl -s -m 25 -X ${method} -H 'Content-Type: application/json' --data-binary @- -o - -w '\\n%{http_code}' '${url}'`
   const result = await session.exec(command, body === undefined ? {} : { stdin: body })
   if (result.code !== 0) {
     throw new Error(`curl to ${url} failed (exit ${result.code}): ${result.stderr.trim()}`)
@@ -54,6 +60,15 @@ async function request(
 
 export function jetsonGet(session: SshSession, port: number, path: string): Promise<unknown> {
   return request(session, port, 'GET', path)
+}
+
+export function jetsonPost(
+  session: SshSession,
+  port: number,
+  path: string,
+  body: unknown
+): Promise<unknown> {
+  return request(session, port, 'POST', path, JSON.stringify(body))
 }
 
 export function jetsonPut(

@@ -126,6 +126,97 @@ interface Rig {
   trigger: RigTrigger
 }
 
+// ---- lab screen payloads (spec section 7) ---------------------------------
+
+interface ModeOptions {
+  resolutions: string[]
+  fourccs: string[]
+}
+
+interface StreamMode {
+  width: number
+  height: number
+  fourcc: string
+  fps?: number | null
+  driverFps?: number
+}
+
+interface StreamStats {
+  active: boolean
+  index?: number
+  fps?: number
+  signal?: { state: string; mean: number; max: number } | null
+  error?: string | null
+  /** What was asked for vs what the driver actually gave (spec 7.2). */
+  requested?: StreamMode
+  observed?: StreamMode
+}
+
+type ControlType = 'int' | 'bool' | 'menu'
+
+interface JetsonControl {
+  key: string
+  id: number
+  name: string
+  type: ControlType
+  /** The range comes from the device on every query, never hardcoded (7.3). */
+  min: number
+  max: number
+  step: number
+  default: number
+  value: number | null
+  readOnly: boolean
+  menu?: { value: number; label: string }[]
+}
+
+interface ControlSet {
+  index: number
+  /** false = this box cannot report controls at all, which is not "none". */
+  supported: boolean
+  controls: JetsonControl[]
+}
+
+interface PresetParam {
+  key: string
+  label: string
+  type: 'int' | 'float' | 'bool' | 'select' | 'multiselect' | 'numbers' | 'indices'
+  default: unknown
+  options?: string[]
+  min?: number
+  max?: number
+}
+
+interface Preset {
+  id: string
+  title: string
+  question: string
+  detail?: string
+  duration_hint?: string
+  params: PresetParam[]
+}
+
+interface RunResult {
+  headline: string
+  status: 'ok' | 'warn' | 'fail'
+  tables?: { title: string; columns: string[]; rows: (string | number)[][] }[]
+  notes?: string[]
+  raw?: unknown
+}
+
+interface RunState {
+  id: string
+  preset: string
+  title: string
+  status: 'running' | 'done' | 'error'
+  started: number
+  finished?: number
+  log: string[]
+  result: RunResult | null
+  error: string | null
+  /** The rig state the run was started under (spec 5). */
+  rigStatus?: string | null
+}
+
 interface Window {
   labDesk: {
     appInfo(): Promise<{ version: string; electron: string; node: string }>
@@ -160,6 +251,34 @@ interface Window {
     rig: {
       get(jetsonId: string, host: string, serverPort: number): Promise<Rig | null>
       save(jetsonId: string, host: string, serverPort: number, rig: Rig): Promise<Rig>
+    }
+    lab: {
+      modes(jetsonId: string, host: string, serverPort: number): Promise<ModeOptions>
+      presets(jetsonId: string, host: string, serverPort: number): Promise<Preset[]>
+      streams(
+        jetsonId: string,
+        host: string,
+        serverPort: number
+      ): Promise<{ streams: Record<string, StreamStats> }>
+      controls(
+        jetsonId: string,
+        host: string,
+        serverPort: number,
+        index: number
+      ): Promise<ControlSet>
+      setControl(
+        jetsonId: string,
+        host: string,
+        serverPort: number,
+        change: { index: number; key: string; value: number }
+      ): Promise<{ index: number; key: string; value: number }>
+      runStart(
+        jetsonId: string,
+        host: string,
+        serverPort: number,
+        request: { preset: string; params: Record<string, unknown>; rigStatus?: string | null }
+      ): Promise<{ run_id: string }>
+      run(jetsonId: string, host: string, serverPort: number, runId: string): Promise<RunState>
     }
     tunnel: {
       open(jetsonId: string, host: string, remotePort: number): Promise<TunnelInfo>

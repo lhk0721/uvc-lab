@@ -9,6 +9,7 @@ import {
   RouterProvider
 } from '@tanstack/react-router'
 import { Home } from './Home'
+import { LabScreen } from './LabScreen'
 import { RigScreen } from './RigScreen'
 import { initBridge } from './bridge'
 import './index.css'
@@ -22,8 +23,13 @@ const rigRoute = createRoute({
   path: '/rig/$jetsonId',
   component: RigScreen
 })
+const labRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/lab/$jetsonId',
+  component: LabScreen
+})
 const router = createRouter({
-  routeTree: rootRoute.addChildren([indexRoute, rigRoute]),
+  routeTree: rootRoute.addChildren([indexRoute, rigRoute, labRoute]),
   history: createHashHistory()
 })
 

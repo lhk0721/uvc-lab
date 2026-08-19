@@ -292,6 +292,9 @@ export function DeviceCard({ jetson }: { jetson: DiscoveredJetson }) {
         <Link className="button-link" to="/rig/$jetsonId" params={{ jetsonId: effectiveId }}>
           구성
         </Link>
+        <Link className="button-link" to="/lab/$jetsonId" params={{ jetsonId: effectiveId }}>
+          랩
+        </Link>
       </div>
     </li>
   )
