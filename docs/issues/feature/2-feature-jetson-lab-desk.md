@@ -1049,3 +1049,26 @@ step of its own, and it needs the wiring to be confirmed first (section 12).
   `publish-workstation=no`) with `avahi-resolve` still answering for the
   hostname, which is why the design now says the mDNS route needs the box to
   advertise before it can work.
+
+## fix: sudo 비밀번호를 명령과 같은 exec 채널로 (#2)
+
+- What: `enableLinger` no longer validates with `sudo -k -S -p '' -v` in one
+  exec and then runs `sudo -n loginctl enable-linger` in the next. Each
+  candidate password now rides the stdin of the command it authorises,
+  `sudo -k -S -p '' loginctl enable-linger <user>`, and a failure that is not a
+  rejected password stops the loop instead of burning the next candidate. The
+  design's sudo section records the rule and why the old shape could not work.
+- Why: the user hit this at the box — the app asked for a sudo password and
+  refused every correct one, with no way past the install. sudo keys its
+  timestamp to the tty (`timestamp_type=tty` is the default), and a
+  non-interactive SSH exec has no tty, so each exec channel falls back to a
+  record of its own. A validation in one channel is invisible to `sudo -n` in
+  the next, whatever the user types.
+- How verified: on the box, over SSH, before touching the code.
+  `sudo -k -S -p '' -v` with the right password on stdin returns 0, and the
+  very next exec running `sudo -n -v` answers "sudo: a password is required"
+  (exit 1); the same password on the stdin of `sudo -k -S -p '' <command>`
+  runs it. `/etc/sudoers` and `/etc/sudoers.d/` set no `tty_tickets` or
+  `timestamp_type` explicitly, so this is stock Ubuntu behaviour, not a local
+  policy. After the fix the app's install reached `ready` with `serverPort
+  18100`, and the box reports `Linger=yes`.

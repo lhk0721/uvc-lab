@@ -224,30 +224,34 @@ export class Provisioner {
     const sudoPassword = creds.sudoPassword ?? stored?.sudoPassword
     if (sudoPassword && !candidates.includes(sudoPassword)) candidates.push(sudoPassword)
 
-    let validated = false
+    // The password has to ride the same exec as the command it authorises.
+    // sudo keys its timestamp to the tty, and a non-interactive SSH exec has
+    // none, so each exec falls back to a record of its own: measured on the
+    // box, `sudo -k -S -p '' -v` returns 0 and the very next exec still says
+    // "sudo: a password is required". Validating in one channel and running
+    // `sudo -n` in the next could never work, whatever the user typed.
+    // -k ignores any cached record so the password itself is what is judged,
+    // -p '' keeps the prompt string out of stderr.
+    let enabled = false
+    let sudoError = ''
     for (const password of candidates) {
-      // -k ignores any cached timestamp so this judges the password itself;
-      // -p '' keeps the prompt string out of stderr.
-      const check = await session.exec(`sudo -k -S -p '' -v`, { stdin: password + '\n' })
-      if (check.code === 0) {
-        validated = true
+      const enable = await session.exec(`sudo -k -S -p '' loginctl enable-linger ${session.user}`, {
+        stdin: password + '\n'
+      })
+      if (enable.code === 0) {
+        enabled = true
         break
       }
-      log('sudo password check failed')
+      sudoError = enable.stderr.trim() || `exit ${enable.code}`
+      // Anything that is not a rejected password (not in sudoers, requiretty)
+      // will not improve on the next candidate, so stop and report it.
+      if (!/password|Sorry, try again/i.test(sudoError)) break
+      log('sudo password rejected')
     }
-    if (!validated) {
+    if (!enabled) {
       return push({
         phase: 'needs-sudo',
-        error: 'stored password is not valid for sudo',
-        manualCommand
-      })
-    }
-    // -n rides the timestamp the -v validation just cached.
-    const enable = await session.exec(`sudo -n loginctl enable-linger ${session.user}`)
-    if (enable.code !== 0) {
-      return push({
-        phase: 'needs-sudo',
-        error: `enable-linger failed: ${enable.stderr.trim() || `exit ${enable.code}`}`,
+        error: `enable-linger failed: ${sudoError || 'sudo refused'}`,
         manualCommand
       })
     }
