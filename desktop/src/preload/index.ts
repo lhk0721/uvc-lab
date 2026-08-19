@@ -1,9 +1,19 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { DiscoveredJetson } from '../main/discovery'
+import type { DiscoveredJetson } from '../main/discovery.ts'
+import type { ProvisionRunOptions, ProvisionState, ServerHealth } from '../main/provision.ts'
 
-// The renderer sees exactly this object and nothing else. Device/rig/provision
-// channels (spec section 9) are added here as their main modules land; the
+// The renderer sees exactly this object and nothing else. Device/rig channels
+// (spec section 9) are added here as their main modules land; the
 // renderer-side mirror of this type lives in src/renderer/src/env.d.ts.
+
+function subscribe<T>(channel: string, callback: (payload: T) => void): () => void {
+  const listener = (_event: unknown, payload: T): void => callback(payload)
+  ipcRenderer.on(channel, listener)
+  return () => {
+    ipcRenderer.removeListener(channel, listener)
+  }
+}
+
 const labDesk = {
   appInfo: (): Promise<{ version: string; electron: string; node: string }> =>
     ipcRenderer.invoke('app:info'),
@@ -14,14 +24,38 @@ const labDesk = {
     addManual: (host: string): Promise<void> => ipcRenderer.invoke('discovery:addManual', host),
     removeManual: (host: string): Promise<void> =>
       ipcRenderer.invoke('discovery:removeManual', host),
-    onChanged: (callback: (jetsons: DiscoveredJetson[]) => void): (() => void) => {
-      const listener = (_event: unknown, jetsons: DiscoveredJetson[]): void => callback(jetsons)
-      ipcRenderer.on('discovery:changed', listener)
-      return () => {
-        ipcRenderer.removeListener('discovery:changed', listener)
-      }
-    }
-  }
+    onChanged: (callback: (jetsons: DiscoveredJetson[]) => void): (() => void) =>
+      subscribe('discovery:changed', callback)
+  },
+
+  // Passwords travel inward only: nothing here can read one back out.
+  credentials: {
+    canPersist: (): Promise<boolean> => ipcRenderer.invoke('credentials:canPersist'),
+    has: (jetsonId: string): Promise<{ user: string } | null> =>
+      ipcRenderer.invoke('credentials:has', jetsonId),
+    set: (
+      jetsonId: string,
+      creds: { user: string; password: string; sudoPassword?: string }
+    ): Promise<void> => ipcRenderer.invoke('credentials:set', jetsonId, creds),
+    delete: (jetsonId: string): Promise<void> => ipcRenderer.invoke('credentials:delete', jetsonId)
+  },
+
+  provision: {
+    run: (options: ProvisionRunOptions): Promise<ProvisionState> =>
+      ipcRenderer.invoke('provision:run', options),
+    onChanged: (callback: (state: ProvisionState) => void): (() => void) =>
+      subscribe('provision:changed', callback)
+  },
+
+  server: {
+    start: (jetsonId: string, host: string, port: number): Promise<ServerHealth> =>
+      ipcRenderer.invoke('server:start', jetsonId, host, port),
+    stop: (jetsonId: string, host: string): Promise<void> =>
+      ipcRenderer.invoke('server:stop', jetsonId, host)
+  },
+
+  onLogLine: (callback: (entry: { host: string; line: string }) => void): (() => void) =>
+    subscribe('log:line', callback)
 }
 
 contextBridge.exposeInMainWorld('labDesk', labDesk)

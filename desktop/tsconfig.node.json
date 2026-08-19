@@ -9,7 +9,8 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true
   },
   "include": ["electron.vite.config.ts", "src/main/**/*.ts", "src/preload/**/*.ts"]
 }

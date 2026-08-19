@@ -194,11 +194,38 @@ during scans cannot crash the main process. Route expiry is cycle-stamped
 (usb/tailscale/lan-scan drop when their source stops reporting; a card with
 other live routes survives), mdns follows goodbye packets, manual never expires.
 
+Step 7 is coded: `src/main/credentials.ts` / `ssh.ts` / `provision.ts`.
+Credentials follow the design's no-plaintext rule structurally — safeStorage is
+injected as a cipher, the store owns `userData/credentials.json` (atomic write,
+memory-only when encryption is unavailable), and the IPC surface is inward-only
+(`canPersist`/`has`/`set`/`delete`; no channel returns a password). `ssh.ts`
+wraps ssh2 (password + keyboard-interactive fallback, line-streamed exec, stdin
+piping), keeps one pooled session per Jetson id, and supplies discovery's
+phase-2 `identify` hook: stored credentials are tried against a candidate and
+the box's own `hostname` becomes the id; failures are negative-cached keyed to
+the credential set, so a foreign box's sshd is not retried every 10s cycle but
+new credentials retry immediately. `provision.ts` runs the design's 9 steps:
+tcp probe → auth (`needs-auth` on bad/missing credentials, distinct from
+`failed`) → app-side VERSION-vs-app-version push decision with `git archive`
+tar streamed into remote `tar -x` → server port picked before bootstrap renders
+the unit (active unit keeps its port, else walk 18100-18109 past `ss -ltn`
+listeners) → `bootstrap.sh` streamed line-by-line (`[N/9]` markers surface as
+progress, `FAIL:` becomes the error) → on exit 3, linger via `sudo -k -S -p ''
+-v` validation with the SSH password first (stored `sudoPassword` as the one
+fallback, each tried exactly once) then `sudo -n loginctl enable-linger`;
+unusable sudo yields `needs-sudo` plus the one-line manual command.
+`startServer`/`stopServer` wrap `systemctl --user` (with the XDG_RUNTIME_DIR
+export) and verify via `curl /api/health` on the box's own loopback, so the
+tunnel is not needed for verification. State pushes over `provision:changed`,
+log lines over `log:line`. Main-side relative imports now carry `.ts`
+extensions (`allowImportingTsExtensions`) so the electron-free modules load
+under plain Node; tests run with `node --experimental-transform-types`.
+
 Next step: with the Jetson on — verify step 2 (3 cameras on `usb-0:1.1/1.2/1.4`,
-profiles `trigger-v1`×2 + `webcam-std`), run bootstrap for real, and see the box
-actually discovered per route; meanwhile steps 7-8 (main: `ssh.ts`/
-`provision.ts`, `tunnel.ts`) can proceed offline, with their Jetson-dependent
-halves batched for the same at-the-box session.
+profiles `trigger-v1`×2 + `webcam-std`), see the box discovered per route, and
+run a real provision end-to-end (aarch64 path, real linger/sudo, uv install
+branch); meanwhile step 8 (`tunnel.ts`) and step 9 (device card + log panel,
+which gives provisioning its UI) can proceed offline.
 
 ## feature: Jetson Lab Desk 설계 문서 (#2)
 
@@ -531,3 +558,63 @@ halves batched for the same at-the-box session.
   error lines; temp lines removed and typecheck + build re-run. Pending at the
   box: actually discovering the Jetson per route (USB / mDNS / link-local /
   Tailscale) — batched with the step-2 and bootstrap verifications.
+
+## feat: main SSH + 프로비저닝 — 9단계 상태 머신 (#2)
+
+- What: spec §11 step 7 — `desktop/src/main/credentials.ts`, `ssh.ts`,
+  `provision.ts` plus their wiring. The credential store treats safeStorage as
+  an injected cipher and owns `userData/credentials.json` (atomic tmp+rename;
+  memory-only when encryption is unavailable or the Linux backend is
+  basic_text — the design's no-plaintext rule). Its IPC is inward-only:
+  `credentials:canPersist/has/set/delete`, and `has` returns the username
+  alone — no channel can read a password back out of main. `ssh.ts` wraps ssh2
+  (password auth with keyboard-interactive fallback, exec with line-streaming
+  and stdin piping, `SshAuthError` distinguished from network failure), pools
+  one session per Jetson id, and provides discovery's phase-2 `identify` hook:
+  stored credentials are tried and the box's own `hostname` becomes the id,
+  with failures negative-cached per credential set so a foreign sshd is not
+  sprayed every 10s cycle while newly stored credentials retry at once.
+  `provision.ts` implements the design's 9 steps — tcp probe, auth
+  (`needs-auth` phase distinct from `failed` so the renderer knows to prompt),
+  the app-side VERSION push decision with `git archive HEAD` streamed into
+  remote `tar -x`, server-port selection before bootstrap renders the unit
+  (an active unit keeps its port; otherwise walk 18100-18109 past `ss -ltn`),
+  bootstrap streamed line-by-line (`[N/9]` markers → progress, `FAIL:` → the
+  error), and on exit 3 the linger sudo: `sudo -k -S -p '' -v` with the SSH
+  password first, stored `sudoPassword` as the one fallback, each exactly
+  once, then `sudo -n loginctl enable-linger`; unusable sudo yields
+  `needs-sudo` with the one-line manual command. `startServer`/`stopServer`
+  run `systemctl --user` (XDG_RUNTIME_DIR exported) and verify with
+  `curl /api/health` on the box's own loopback. IPC: `provision:run` invoke,
+  `provision:changed`/`log:line` push; preload/env.d.ts mirror the surface.
+  Main-side relative imports gained `.ts` extensions
+  (`allowImportingTsExtensions`) so the electron-free modules load under
+  plain Node.
+- Why: step 7 turns a discovered address into a provisioned box and gives
+  discovery its identity source — entries stop being provisional exactly when
+  the box itself answers. The password rules are structural, not conventional:
+  renderer-inward IPC only, `sudo -S` stdin (never argv, where the Jetson's
+  `ps` would show it), one attempt per candidate password (repeats hit sudo's
+  warning and auth.log).
+- How verified: success criterion set up front — (1) typecheck + build, (2)
+  the state machine offline against a real SSH protocol peer, (3) dev-run IPC
+  roundtrip. `npm run typecheck` and `electron-vite build` pass clean on the
+  committed code. A plain-Node script (`node --experimental-transform-types`,
+  no framework) drives a scripted ssh2 `Server` on localhost as the fake
+  Jetson and passed 11/11: credential round-trip with no plaintext bytes on
+  disk and nothing persisted without encryption; exec stdout/stderr/exit/stdin
+  delivery and `SshAuthError` typing; the identify negative cache (failed host
+  not re-attempted while the credential set is unchanged, retried after it
+  changes, hostname becomes the id, session adopted into the pool); the full
+  provision run — tar push byte-count equal to `git archive HEAD`, port walk
+  to 18101 past a used 18100, bootstrap exit 3, sudo password arriving on
+  stdin only, ready; version-match skipping the push; sudo failure stopping
+  after exactly one attempt with the manual command surfaced; a bootstrap
+  `FAIL:` line becoming the reported error; wrong/missing credentials
+  reporting `needs-auth`; and an active unit keeping its rendered port. Dev
+  smoke with temporary console lines: window loaded, `credentials:canPersist`
+  true under real DPAPI, has → null, set → `{"user":"smoke"}`, delete → null,
+  zero error lines, and `%APPDATA%\uvc-lab-desk\credentials.json` left with
+  empty entries. Pending at the box (batched): a real end-to-end provision —
+  aarch64 bootstrap path, real sudo/linger, uv install branch — and
+  `identify` merging the real routes.

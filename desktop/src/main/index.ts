@@ -1,6 +1,9 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
-import { join } from 'node:path'
-import { Discovery } from './discovery'
+import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron'
+import { join, resolve } from 'node:path'
+import { Discovery } from './discovery.ts'
+import { CredentialStore, type CredentialCipher } from './credentials.ts'
+import { makeIdentify, SshPool } from './ssh.ts'
+import { Provisioner, startServer, stopServer, type ProvisionRunOptions } from './provision.ts'
 
 // The renderer runs fully locked down; everything OS-facing (SSH, mDNS,
 // filesystem, credentials) stays in this process and crosses only through
@@ -36,18 +39,50 @@ function createWindow(): void {
   }
 }
 
-// Discovery result is main-owned push state: main sends, the renderer
-// subscribes (`discovery:changed`). No identify hook yet — entries stay
-// provisional (keyed by address) until ssh.ts lands in step 7.
-const discovery = new Discovery({
-  onUpdate: (jetsons) => {
-    for (const win of BrowserWindow.getAllWindows()) {
-      win.webContents.send('discovery:changed', jetsons)
-    }
+function broadcast(channel: string, payload: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send(channel, payload)
   }
-})
+}
+
+// safeStorage is the cipher, CredentialStore owns the file. The design's
+// no-plaintext rule: unavailable encryption (or Linux basic_text) means
+// nothing is persisted and the app asks each run.
+const cipher: CredentialCipher = {
+  available: () => {
+    if (!safeStorage.isEncryptionAvailable()) return false
+    if (process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text') {
+      return false
+    }
+    return true
+  },
+  encrypt: (plain) => safeStorage.encryptString(plain),
+  decrypt: (blob) => safeStorage.decryptString(blob)
+}
 
 app.whenReady().then(() => {
+  const store = new CredentialStore(join(app.getPath('userData'), 'credentials.json'), cipher)
+  const pool = new SshPool(store)
+
+  // Discovery result is main-owned push state: main sends, the renderer
+  // subscribes (`discovery:changed`). Phase 2 identity comes from the SSH
+  // identify hook — the box's own hostname, tried with stored credentials.
+  const discovery = new Discovery({
+    onUpdate: (jetsons) => broadcast('discovery:changed', jetsons),
+    identify: makeIdentify(store, pool)
+  })
+
+  // Payload source for `git archive`: the repo root, one level above
+  // desktop/. Holds in dev; packaged builds are a later step.
+  const provisioner = new Provisioner({
+    store,
+    pool,
+    appVersion: app.getVersion(),
+    repoRoot: resolve(app.getAppPath(), '..'),
+    onState: (state) => broadcast('provision:changed', state),
+    onLog: (host, line) => broadcast('log:line', { host, line })
+  })
+
   ipcMain.handle('app:info', () => ({
     version: app.getVersion(),
     electron: process.versions.electron,
@@ -58,6 +93,35 @@ app.whenReady().then(() => {
   ipcMain.handle('discovery:scan', () => discovery.scanNow())
   ipcMain.handle('discovery:addManual', (_event, host) => discovery.addManual(String(host)))
   ipcMain.handle('discovery:removeManual', (_event, host) => discovery.removeManual(String(host)))
+
+  // Credentials cross this boundary inward only: store / exists? / delete.
+  // There is deliberately no channel that returns a password to the renderer.
+  ipcMain.handle('credentials:canPersist', () => store.canPersist())
+  ipcMain.handle('credentials:has', (_event, jetsonId) => store.has(String(jetsonId)))
+  ipcMain.handle('credentials:set', (_event, jetsonId, creds) => {
+    store.set(String(jetsonId), {
+      user: String(creds.user),
+      password: String(creds.password),
+      ...(creds.sudoPassword !== undefined && { sudoPassword: String(creds.sudoPassword) })
+    })
+  })
+  ipcMain.handle('credentials:delete', (_event, jetsonId) => store.delete(String(jetsonId)))
+
+  ipcMain.handle('provision:run', (_event, options: ProvisionRunOptions) =>
+    provisioner.run(options)
+  )
+
+  ipcMain.handle('server:start', async (_event, jetsonId, host, port) => {
+    const session = await pool.acquire(String(jetsonId), String(host))
+    if (!session) throw new Error('no SSH session and no stored credentials')
+    return startServer(session, Number(port))
+  })
+  ipcMain.handle('server:stop', async (_event, jetsonId, host) => {
+    const session = await pool.acquire(String(jetsonId), String(host))
+    if (!session) throw new Error('no SSH session and no stored credentials')
+    return stopServer(session)
+  })
+
   discovery.start()
 
   createWindow()
@@ -65,10 +129,13 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+
+  app.on('will-quit', () => {
+    discovery.stop()
+    pool.closeAll()
+  })
 })
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
-
-app.on('will-quit', () => discovery.stop())
