@@ -165,9 +165,21 @@ VERSION marker bootstrap wrote). Untestable off-Jetson and still pending there:
 the aarch64 path, real `systemctl --user`/linger behavior, and the uv install
 branch (the WSL harness pre-installed x86 uv).
 
+Step 5 is coded: `desktop/` skeleton (electron-vite 5 + React 19 + TS) with the
+main/preload/renderer boundary locked down (`contextIsolation: true`,
+`nodeIntegration: false`, `sandbox: true`), a single `app:info` IPC roundtrip
+proving the bridge, and the decided renderer stack in place (TanStack Router
+code-based with hash history, TanStack Query, zustand installed for later).
+vite is pinned to ^7 because electron-vite 5.0.0's peer range stops there.
+`desktop` is `export-ignore`d so the Jetson payload tar never carries the app.
+electron-builder packaging is not part of this step. Verified offline: typecheck
++ build clean, dev run showed the window and completed the IPC roundtrip.
+
 Next step: with the Jetson on — verify step 2 (3 cameras on `usb-0:1.1/1.2/1.4`,
 profiles `trigger-v1`×2 + `webcam-std`) and run bootstrap for real; meanwhile
-step 5 (`desktop/` skeleton) can proceed offline.
+steps 6-8 (main: `discovery.ts`, `ssh.ts`/`provision.ts`, `tunnel.ts`) can
+proceed offline, with their Jetson-dependent halves batched for the same
+at-the-box session.
 
 ## feature: Jetson Lab Desk 설계 문서 (#2)
 
@@ -414,3 +426,41 @@ step 5 (`desktop/` skeleton) can proceed offline.
   push is `git archive` of the whole repo), fixed by copying all `*.py`.
   Still pending on the real Jetson: the aarch64 path, real user-manager +
   linger behavior, and the uv install branch.
+
+## feat: desktop 뼈대 — electron-vite + React + TS (#2)
+
+- What: spec §11 step 5 — the `desktop/` skeleton with electron-vite 5 +
+  React 19 + TypeScript: the main/preload/renderer boundary and a placeholder
+  screen. Main creates one window with `contextIsolation: true`,
+  `nodeIntegration: false`, `sandbox: true`, routes `window.open` to the OS
+  browser, and serves a single `app:info` IPC handler. Preload exposes one
+  `labDesk` object via contextBridge — the spec §9 channels get added there as
+  their main modules land — and the renderer-side type mirror is hand-kept in
+  `env.d.ts` because the preload file depends on Node types. The renderer is
+  the locked-in stack: TanStack Router (code-based; hash history, since the
+  packaged renderer loads from `file://` where a path history never matches
+  `/`), TanStack Query (the `app:info` fetch), and zustand installed for later
+  steps. The Home route shows the empty state and the app/Electron/Node
+  versions fetched over the bridge. `.gitattributes` gains
+  `desktop export-ignore` so the `git archive` payload pushed to the Jetson
+  never carries the laptop app. electron-builder packaging is deliberately not
+  part of this step (design: skeleton + empty screen).
+- Why: step 5 is the first Electron step and the base steps 6-9 build on; the
+  design fixes the layout (`src/main`, `src/preload`, `src/renderer`,
+  `electron.vite.config.ts`), so it is laid down exactly. vite is pinned to
+  `^7` (with `@vitejs/plugin-react` `^5`) because npm resolved vite 8 by
+  default while electron-vite 5.0.0's peer range stops at vite 7.
+- How verified: success criterion set up front — typecheck + build pass, and a
+  dev run proving the renderer → preload → main IPC roundtrip. `npm run
+  typecheck` (strict tsc over both node and web configs) and
+  `electron-vite build` pass clean. Dev smoke test with
+  `ELECTRON_ENABLE_LOGGING=1` and a temporary console line in Home:
+  `[main] window loaded` fired and the renderer logged `[smoke] app:info
+  {"version":"0.1.0","electron":"43.4.1","node":"24.18.1"}` — window shown,
+  preload bridge live, roundtrip complete, no error lines (the doubled log is
+  StrictMode's double render). The temporary line was then removed and
+  typecheck + build re-run on the committed code. One install hiccup worth
+  recording: the first `npm install -D` failed on ERESOLVE (vite 8) and left
+  `electron` in node_modules without its binary, so the retried install
+  skipped postinstall and `npm run dev` died with "Electron uninstall"; fixed
+  by running `node node_modules/electron/install.js` by hand.
