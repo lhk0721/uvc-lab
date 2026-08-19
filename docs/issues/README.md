@@ -6,3 +6,4 @@ One row per management document, added in the same commit that creates the doc.
 | --- | --- | --- | --- |
 | #1 | docs/issues/umbrella/1-umbrella-lhk0721.md | in progress | Umbrella — lhk0721 workstream |
 | #2 | docs/issues/feature/2-feature-jetson-lab-desk.md | in progress | Jetson auto-provisioning + laptop-side Lab Desk control app |
+| #3 | docs/issues/fix/3-fix-uvc-antiflicker-60hz.md | in progress | Pin camera anti-flicker to 60Hz mains + report brightness swing |

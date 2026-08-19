@@ -42,6 +42,7 @@ import numpy as np
 
 from uvc_devices import (
     IS_WINDOWS,
+    MAINS_HZ,
     FrameTimer,
     add_environment_args,
     backend_name,
@@ -53,6 +54,11 @@ from uvc_devices import (
 
 WARMUP_FRAMES = 30  # exposure changes need longer to settle than a mode change
 
+# Below this, swing is sensor noise and scene motion. Above it, on a static
+# scene, it is a mains beat — measured 39% on a 50Hz-configured camera under
+# 60Hz light, 2.4% on the same camera once corrected.
+FLICKER_WARN_PCT = 10.0
+
 # DirectShow: 0.25 = manual, 0.75 = auto. V4L2: 1 = manual, 3 = aperture-priority.
 AUTO_ON = 0.75 if IS_WINDOWS else 3
 AUTO_OFF = 0.25 if IS_WINDOWS else 1
@@ -61,8 +67,20 @@ DEFAULT_VALUES_WINDOWS = [-4, -5, -6, -7, -8, -9]      # log2 seconds
 DEFAULT_VALUES_V4L2 = [1000, 500, 250, 120, 60, 30]    # 100us ticks
 
 
-def measure(cap: cv2.VideoCapture, seconds: float) -> tuple[dict, float]:
-    """Sustained rate plus mean brightness over the window."""
+# Enough consecutive samples to see a slow oscillation; the pixel subsample keeps
+# the per-frame cost negligible, so this does not distort what is being measured.
+BRIGHTNESS_SAMPLES = 600
+
+
+def measure(cap: cv2.VideoCapture, seconds: float) -> tuple[dict, dict]:
+    """Sustained rate plus brightness level AND its variation over the window.
+
+    The mean alone answers "is it lit enough". It cannot answer "is it steady",
+    and unsteady is a distinct failure: a 50/60Hz anti-flicker mismatch leaves
+    the mean untouched while the frame-to-frame swing reaches tens of percent.
+    Sampling has to be consecutive for the same reason — taking every fifth
+    frame aliases the very oscillation this is looking for.
+    """
     for _ in range(WARMUP_FRAMES):
         cap.read()
     timer = FrameTimer()
@@ -73,11 +91,22 @@ def measure(cap: cv2.VideoCapture, seconds: float) -> tuple[dict, float]:
         if not ok:
             break
         timer.tick()
-        # Subsample: measuring every full frame would add cost to what we measure.
-        if len(brightness) < 30 and timer.frames % 5 == 0:
+        if len(brightness) < BRIGHTNESS_SAMPLES:
             brightness.append(float(np.mean(frame[::8, ::8])))
-    mean_brightness = sum(brightness) / len(brightness) if brightness else float("nan")
-    return timer.summary(), mean_brightness
+    if not brightness:
+        nan = float("nan")
+        return timer.summary(), {"mean": nan, "sd": nan, "p2p": nan, "p2p_pct": nan}
+    values = np.asarray(brightness)
+    mean = float(values.mean())
+    p2p = float(values.max() - values.min())
+    return timer.summary(), {
+        "mean": mean,
+        "sd": float(values.std()),
+        "p2p": p2p,
+        # Relative swing is what makes runs at different light levels comparable.
+        "p2p_pct": 100.0 * p2p / mean if mean else float("nan"),
+        "samples": len(brightness),
+    }
 
 
 def main() -> int:
@@ -132,9 +161,12 @@ def main() -> int:
     auto_summary, auto_brightness = measure(cap, args.seconds)
     settled = cap.get(cv2.CAP_PROP_EXPOSURE)
     print(f"  {auto_summary.get('mean_fps', 0):.1f} fps   "
-          f"brightness {auto_brightness:.1f}/255   settled exposure {settled:g}")
+          f"brightness {auto_brightness['mean']:.1f}/255 "
+          f"(swing {auto_brightness['p2p_pct']:.1f}% p2p, sd {auto_brightness['sd']:.2f})   "
+          f"settled exposure {settled:g}")
     results.append({"mode": "auto", "requested": None, "readback": settled,
-                    "fps": auto_summary.get("mean_fps"), "brightness": auto_brightness,
+                    "fps": auto_summary.get("mean_fps"),
+                    "brightness": auto_brightness["mean"], "flicker": auto_brightness,
                     "summary": auto_summary})
 
     print("\n[manual exposure sweep]")
@@ -148,10 +180,12 @@ def main() -> int:
         fps = summary.get("mean_fps", 0.0)
         print(f"  exposure {value:>7g} (readback {readback:>7g}, "
               f"{'accepted' if accepted else 'REJECTED'})  "
-              f"{fps:>6.1f} fps   brightness {brightness:>5.1f}/255")
+              f"{fps:>6.1f} fps   brightness {brightness['mean']:>5.1f}/255   "
+              f"swing {brightness['p2p_pct']:>5.1f}%")
         results.append({"mode": "manual", "requested": value, "readback": readback,
                         "accepted": bool(accepted), "fps": fps,
-                        "brightness": brightness, "summary": summary})
+                        "brightness": brightness["mean"], "flicker": brightness,
+                        "summary": summary})
 
     cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, AUTO_ON)  # leave the device as we found it
     cap.release()
@@ -184,6 +218,22 @@ def main() -> int:
             print(f"\n  EXPOSURE IS NOT THE BOTTLENECK. Rate is flat ({spread:.1f} fps) "
                   f"across the whole sweep, so the ceiling is elsewhere — "
                   f"re-run scripts/bench_uvc_capture.py and look at grab vs retrieve.")
+
+    # Brightness swing is a verdict of its own: a camera can hold 60fps perfectly
+    # while every frame lands at a different brightness. Frame rate cannot see that.
+    swings = [(r["requested"], r["flicker"]["p2p_pct"]) for r in results
+              if r.get("flicker") and r["flicker"]["p2p_pct"] == r["flicker"]["p2p_pct"]]
+    if swings:
+        worst_at, worst = max(swings, key=lambda pair: pair[1])
+        where = f"exposure {worst_at:g}" if worst_at is not None else "auto exposure"
+        print(f"\n  brightness swing: worst {worst:.1f}% peak-to-peak at {where}")
+        if worst >= FLICKER_WARN_PCT:
+            print(f"  FLICKERING. Above {FLICKER_WARN_PCT:.0f}% on a static scene this is a "
+                  f"mains beat, not noise, and it grows as exposure shortens. Check that "
+                  f"the sensor's anti-flicker filter matches local mains — on V4L2 "
+                  f"uvc_devices.set_power_line_frequency() pins it to {MAINS_HZ}Hz. "
+                  f"OpenCV cannot reach that control on Windows; set it in the vendor "
+                  f"utility or the DirectShow property page.")
 
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)

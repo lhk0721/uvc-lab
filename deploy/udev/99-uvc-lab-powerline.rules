@@ -1,0 +1,20 @@
+# Pin the DCXIN/DECXIN modules' anti-flicker filter to 60 Hz mains.
+#
+# These modules power up with power_line_frequency = 50 Hz and the value resets
+# every time the device re-enumerates, so setting it once by hand does not hold
+# across a replug or a reboot. On 60 Hz mains the mismatch shows up as
+# frame-to-frame brightness swing: measured 39.1% peak-to-peak on one camera
+# here, 2.4% on the same camera after this rule.
+#
+# Matches by USB vendor/product because the product string is not stable across
+# units on this rig - two report "DCXIN Camera" and one reports "DECXIN Camera"
+# despite the same 1bcf:2d50 id.
+#
+# Install (on the Jetson):
+#   sudo install -m 0755 deploy/udev/set-power-line-frequency.py \
+#        /opt/uvc-lab/set-power-line-frequency.py
+#   sudo install -m 0644 deploy/udev/99-uvc-lab-powerline.rules \
+#        /etc/udev/rules.d/99-uvc-lab-powerline.rules
+#   sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=video4linux
+
+ACTION=="add", SUBSYSTEM=="video4linux", ATTRS{idVendor}=="1bcf", ATTRS{idProduct}=="2d50", RUN+="/usr/bin/python3 /opt/uvc-lab/set-power-line-frequency.py /dev/%k 60"
