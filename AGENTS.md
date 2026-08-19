@@ -54,7 +54,10 @@
 <!-- One line per active work item: name + management doc path + one-line summary.
      Details live in the doc's "Current State" block, never here.
      Remove the line in post-PR cleanup when the PR merges or the issue closes. -->
-- (none)
+- Jetson Lab Desk — docs/issues/feature/2-feature-jetson-lab-desk.md — built and
+  verified against the real Jetson over the LAN-direct route (2026-08-19); the
+  remaining routes, mDNS advertising, trigger verification, and the stuck-capture
+  limit are follow-ups #4-#7.
 
 ## Canon (repo slot)
 

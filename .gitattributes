@@ -1,1 +1,5 @@
 .githooks/* text eol=lf
+deploy/bootstrap.sh text eol=lf
+deploy/uvc-lab.service text eol=lf
+# desktop/ is the laptop app; the Jetson payload (git archive) never needs it
+desktop export-ignore
